@@ -1,134 +1,246 @@
+"""
+MemoryOS v2 — Orchestrator
+============================
+Request processing pipeline:
+  1. Increment turn counter (Neo4j)
+  2. Proactive archival search (ChromaDB)
+  3. Build graph context (Neo4j traversal)
+  4. Call LLM with 9-tool schema
+  5. Dispatch tool calls → graph / archive updates
+  6. Background-save episode to ChromaDB
+  7. Return (response_text, active_memories, debug_prompt)
+"""
+
 import json
+import threading
+
 from groq import Groq, BadRequestError, RateLimitError
+
 import config
 from backend.logic.prompts import SYSTEM_PROMPT_TEMPLATE
-from backend.managers.core_manager import CoreMemoryManager
+from backend.logic.tools import TOOLS_SCHEMA
+from backend.managers.graph_manager import GraphManager
 from backend.managers.archival_manager import ArchivalMemoryManager
 from backend.managers.buffer_manager import BufferManager
-import threading
-import re
 
-client = Groq(api_key=config.GROQ_API_KEY)
+_client = Groq(api_key=config.GROQ_API_KEY)
+
 
 class Orchestrator:
+
     def __init__(self):
-        self.core = CoreMemoryManager()
-        self.archive = ArchivalMemoryManager()
-        self.buffer = BufferManager(max_turns=10)
-        
-        # Tools Schema
-        self.tools_schema = [
-            {"type": "function", "function": {"name": "core_memory_update", "description": "Save PERMANENT user traits.", "parameters": {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}, "required": ["key", "value"]}}},
-            {"type": "function", "function": {"name": "delete_core_memory", "description": "REMOVE outdated info.", "parameters": {"type": "object", "properties": {"key": {"type": "string"}, "value_to_remove": {"type": "string"}}, "required": ["key", "value_to_remove"]}}},
-            {"type": "function", "function": {"name": "update_entity_memory", "description": "Update people/places.", "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "relationship": {"type": "string"}, "attributes": {"type": "object"}}, "required": ["name", "attributes"]}}},
-            {"type": "function", "function": {"name": "log_event", "description": "Log a timeline event.", "parameters": {"type": "object", "properties": {"description": {"type": "string"}}, "required": ["description"]}}},
-            {"type": "function", "function": {"name": "save_knowledge", "description": "Save facts/codes.", "parameters": {"type": "object", "properties": {"topic": {"type": "string"}, "content": {"type": "string"}}, "required": ["topic", "content"]}}},
-            {"type": "function", "function": {"name": "archival_memory_search", "description": "Search history.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}
-        ]
+        self.graph   = GraphManager()          # Neo4j — structured graph memory
+        self.archive = ArchivalMemoryManager() # ChromaDB — semantic / episodic memory
+        self.buffer  = BufferManager(max_turns=config.BUFFER_MAX_TURNS)
 
-    def process_message(self, user_message):
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
+
+    def process_message(self, user_message: str):
         try:
-            current_turn = self.core.increment_turn()
+            current_turn = self.graph.increment_turn()
             self.buffer.add_turn("user", user_message)
-            
-            # --- PROACTIVE SEARCH ---
-            recent_history = [msg["content"] for msg in self.buffer.get_messages()[-2:]]
-            recent_history.append(user_message)
-            search_query = " ".join(recent_history)
 
-            # 1. Search ChromaDB
-            archival_results = self.archive.search_memory(user_message, n_results=3)
-            
-            # 2. Get Context from Core
-            core_context = self.core.get_core_prompt(
-                recent_history_text=search_query, 
-                archival_context=archival_results
+            # 1. Proactive semantic search (ChromaDB)
+            search_query    = " ".join(
+                m["content"] for m in self.buffer.get_messages()[-3:]
             )
-            
-            # 3. GENERATE FULL SYSTEM PROMPT
-            system_instruction = SYSTEM_PROMPT_TEMPLATE.format(core_memory_block=core_context)
-            
-            messages = [{"role": "system", "content": system_instruction}]
+            archival_hits   = self.archive.search_memory(search_query, n_results=4)
+
+            # 2. Build relevance-scored context (fixed token budget regardless of turn count)
+            core_ctx = self.graph.get_core_prompt(
+                recent_history_text=search_query,
+                archival_context=archival_hits,
+                current_turn=current_turn,
+            )
+
+            # 3. Compose messages for the LLM
+            system_prompt = SYSTEM_PROMPT_TEMPLATE.format(core_memory_block=core_ctx)
+            messages = [{"role": "system", "content": system_prompt}]
             for msg in self.buffer.get_messages():
                 if msg["content"] != user_message:
                     messages.append({"role": msg["role"], "content": msg["content"]})
             messages.append({"role": "user", "content": user_message})
 
-            active_memories = archival_results
-            final_response_text = ""
+            active_memories   = list(archival_hits)
+            final_response    = ""
 
-            for _ in range(3):
+            # 4. Agentic loop (up to 4 rounds for multi-tool turns)
+            for _round in range(4):
                 try:
-                    completion = client.chat.completions.create(
+                    completion = _client.chat.completions.create(
                         model=config.LLM_MODEL,
                         messages=messages,
-                        tools=self.tools_schema,
+                        tools=TOOLS_SCHEMA,
                         tool_choice="auto",
-                        parallel_tool_calls=True, 
-                        max_tokens=1024
+                        parallel_tool_calls=True,
+                        max_tokens=1024,
                     )
                 except RateLimitError:
-                    return "System Limit Reached: Please wait a moment.", [], "" # <--- Fixed: Return 3 values
-                except BadRequestError as e:
-                    if "tool_use_failed" in str(e):
-                        messages.append({"role": "user", "content": "SYSTEM ERROR: Invalid tool format."})
-                        continue
-                    else:
-                        raise e
-                
-                response_message = completion.choices[0].message
-                
-                if response_message.tool_calls:
-                    messages.append(response_message)
-                    for tool_call in response_message.tool_calls:
-                        fname = tool_call.function.name
-                        try:
-                            args = json.loads(tool_call.function.arguments)
-                        except:
-                            args = {}
-                        
-                        result = "Success"
-                        try:
-                            if fname == "core_memory_update": result = self.core.update_profile(args["key"], args["value"])
-                            elif fname == "delete_core_memory": result = self.core.remove_from_profile(args["key"], args["value_to_remove"])
-                            elif fname == "update_entity_memory": result = self.core.update_entity(args["name"], args.get("relationship"), args["attributes"])
-                            elif fname == "log_event": result = self.core.log_event(args["description"])
-                            elif fname == "save_knowledge": result = self.core.add_general_knowledge(args["topic"], args["content"])
-                            elif fname == "archival_memory_search":
-                                search_res = self.archive.search_memory(args["query"])
-                                active_memories.extend(search_res)
-                                result = json.dumps(search_res)
-                        except Exception as e:
-                            result = f"Error: {str(e)}"
-
+                    return "Rate limit reached — please wait a moment.", [], ""
+                except BadRequestError as exc:
+                    if "tool_use_failed" in str(exc):
                         messages.append({
-                            "tool_call_id": tool_call.id,
-                            "role": "tool",
-                            "name": fname,
-                            "content": str(result)
+                            "role": "user",
+                            "content": "SYSTEM: Invalid tool format. Please retry with valid JSON.",
                         })
-                else:
-                    content = response_message.content if response_message.content else ""
-                    if "<function" in content or ("{" in content and "type" in content and "function" in content):
-                        messages.append({"role": "user", "content": "SYSTEM ERROR: Raw code detected."})
                         continue
-                    final_response_text = content
+                    raise
+
+                response_msg = completion.choices[0].message
+
+                # ── Tool calls ───────────────────────────────────────────────
+                if response_msg.tool_calls:
+                    messages.append(response_msg)
+                    for tc in response_msg.tool_calls:
+                        fname = tc.function.name
+                        try:
+                            args = json.loads(tc.function.arguments)
+                        except Exception:
+                            args = {}
+
+                        result = self._dispatch(fname, args, current_turn, active_memories)
+                        messages.append({
+                            "tool_call_id": tc.id,
+                            "role":         "tool",
+                            "name":         fname,
+                            "content":      str(result),
+                        })
+
+                # ── Text response ────────────────────────────────────────────
+                else:
+                    text = (response_msg.content or "").strip()
+                    if "<function" in text or (
+                        "{" in text and "type" in text and "function" in text
+                    ):
+                        messages.append({
+                            "role": "user",
+                            "content": "SYSTEM: Raw function code detected. Respond in plain text.",
+                        })
+                        continue
+                    final_response = text
                     break
-            
-            if not final_response_text:
-                final_response_text = "I'm having trouble retrieving that information right now."
-            
-            if final_response_text:
-                self.buffer.add_turn("assistant", final_response_text)
-                def background_save():
-                    self.archive.add_memory(f"Bot: {final_response_text}", "assistant", current_turn)
-                save_thread = threading.Thread(target=background_save)
-                save_thread.start()
 
-            # --- RETURN 3 VALUES (FIXED) ---
-            return final_response_text, active_memories, system_instruction
+            if not final_response:
+                final_response = "I'm having trouble responding right now. Please try again."
 
-        except Exception as e:
-            print(f"--- ORCHESTRATOR CRASHED --- \n{str(e)}")
-            # --- RETURN 3 VALUES (FIXED) ---
-            return f"System Error: {str(e)}", [], ""
+            # 5. Save to buffer + background archive
+            self.buffer.add_turn("assistant", final_response)
+
+            def _bg_save():
+                self.archive.add_memory(
+                    f"User: {user_message}\nAssistant: {final_response}",
+                    "assistant",
+                    current_turn,
+                )
+
+            threading.Thread(target=_bg_save, daemon=True).start()
+
+            return final_response, active_memories, system_prompt
+
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            return f"System error: {exc}", [], ""
+
+    # ------------------------------------------------------------------
+    # Tool dispatcher
+    # ------------------------------------------------------------------
+
+    def _dispatch(self, fname: str, args: dict, turn: int, active_memories: list):
+        """Route a tool call to the correct manager method."""
+        try:
+            # ── Profile ──────────────────────────────────────────────────
+            if fname == "update_user_profile":
+                return self.graph.update_profile(args["key"], args["value"])
+
+            if fname == "delete_user_profile_field":
+                return self.graph.remove_from_profile(
+                    args["key"], args.get("value_to_remove", "")
+                )
+
+            # ── Preferences ──────────────────────────────────────────────
+            if fname == "add_preference":
+                return self.graph.add_preference(
+                    args["value"], args.get("category", "preference")
+                )
+
+            # ── Entities ─────────────────────────────────────────────────
+            if fname == "update_entity":
+                return self.graph.update_entity(
+                    name=args["name"],
+                    relationship=args.get("relationship_to_user"),
+                    attributes=args.get("attributes", {}),
+                    entity_type=args.get("entity_type", "person"),
+                )
+
+            if fname == "link_entities":
+                return self.graph.link_entities(
+                    args["entity_a"],
+                    args["entity_b"],
+                    args["relationship_type"],
+                    args.get("description", ""),
+                )
+
+            # ── Events ───────────────────────────────────────────────────
+            if fname == "log_event":
+                return self.graph.log_event(
+                    description=args["description"],
+                    entities_involved=args.get("entities_involved", []),
+                    date=args.get("date"),
+                )
+
+            # ── Knowledge ────────────────────────────────────────────────
+            if fname == "save_knowledge":
+                return self.graph.add_general_knowledge(
+                    args["topic"], args["content"]
+                )
+
+            # ── Entity resolution ────────────────────────────────────────
+            if fname == "merge_entities":
+                return self.graph.merge_entities(
+                    args["canonical_name"], args["alias_name"]
+                )
+
+            # ── Graph traversal ──────────────────────────────────────────
+            if fname == "graph_search":
+                return self.graph.graph_search(
+                    args["entity_name"], args.get("depth", 2)
+                )
+
+            # ── Archival vector search ────────────────────────────────────
+            if fname == "archival_memory_search":
+                hits = self.archive.search_memory(args["query"], n_results=5)
+                active_memories.extend(hits)
+                if hits:
+                    lines = [
+                        f"[Turn {h['origin_turn']} | dist={h['distance']:.2f}] {h['content'][:120]}"
+                        for h in hits
+                    ]
+                    return "Archival results:\n" + "\n".join(lines)
+                return "No relevant archival memories found."
+
+            # ── Legacy aliases (backward compat) ─────────────────────────
+            if fname == "core_memory_update":
+                return self.graph.update_profile(args["key"], args["value"])
+            if fname == "delete_core_memory":
+                return self.graph.remove_from_profile(
+                    args["key"], args.get("value_to_remove", "")
+                )
+            if fname == "update_entity_memory":
+                return self.graph.update_entity(
+                    args["name"], args.get("relationship"), args.get("attributes", {})
+                )
+
+            return f"Unknown tool: {fname}"
+
+        except Exception as exc:
+            return f"Tool error ({fname}): {exc}"
+
+    # ------------------------------------------------------------------
+    # Teardown
+    # ------------------------------------------------------------------
+
+    def close(self):
+        self.graph.close()

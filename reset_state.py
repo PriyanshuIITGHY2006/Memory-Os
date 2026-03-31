@@ -1,41 +1,54 @@
-import json
+"""
+MemoryOS v2 — Full Reset
+=========================
+Clears:
+  1. Neo4j graph  (wipes all nodes / relationships, recreates User node)
+  2. ChromaDB     (deletes the chroma_db/ directory entirely)
+
+Run: python reset_state.py
+"""
+
 import shutil
-import os
+import sys
 import config
 
-# 1. RESET JSON (Structured Memory)
-filepath = config.USER_STATE_FILE
 
-# Define a truly empty state (or keep your default profile if preferred)
-blank_state = {
-    "user_profile": {
-        "name": "Priyanshu",  # Keep default name or set to None
-        "primary_location": None,
-        "occupation": None,
-        "preferences": [],
-        "greeting": None
-    },
-    "entities": {},        # Wiped
-    "knowledge_base": {},  # Wiped
-    "events": [],          # Wiped
-    "system_stats": {"total_turns": 0}
-}
+# ── Neo4j reset ────────────────────────────────────────────────────────────────
 
-with open(filepath, "w") as f:
-    json.dump(blank_state, f, indent=4)
-print("✅ JSON Memory: Wiped (Reset to blank profile).")
+print("Resetting Neo4j graph…")
+try:
+    from neo4j import GraphDatabase
 
-# 2. RESET CHROMADB (Vector Memory)
-# We simply delete the folder. Chroma will recreate it automatically on next run.
+    driver = GraphDatabase.driver(
+        config.NEO4J_URI,
+        auth=(config.NEO4J_USER, config.NEO4J_PASSWORD),
+    )
+    with driver.session() as session:
+        session.run("MATCH (n) DETACH DELETE n")
+        # Recreate the singleton User node
+        session.run(
+            "MERGE (u:User {id:'main'}) "
+            "ON CREATE SET u.total_turns = 0"
+        )
+    driver.close()
+    print("  Neo4j: cleared (User node recreated).")
+except Exception as exc:
+    print(f"  Neo4j reset failed: {exc}")
+    print("  Is Neo4j running? Check NEO4J_URI / NEO4J_PASSWORD in .env")
+
+
+# ── ChromaDB reset ────────────────────────────────────────────────────────────
+
+print("Resetting ChromaDB…")
 chroma_dir = config.CHROMA_DB_DIR
-
-if os.path.exists(chroma_dir):
+if chroma_dir.exists():
     try:
         shutil.rmtree(chroma_dir)
-        print(f"✅ Vector Memory: Wiped (Deleted {chroma_dir}).")
-    except Exception as e:
-        print(f"❌ Error deleting ChromaDB: {e}")
+        print(f"  ChromaDB: deleted {chroma_dir}")
+    except Exception as exc:
+        print(f"  ChromaDB delete failed: {exc}")
 else:
-    print("ℹ️ Vector Memory: Already empty.")
+    print("  ChromaDB: already empty.")
 
-print("\n🚀 SYSTEM RESET COMPLETE. Restart your server now.")
+
+print("\nReset complete. Restart the server.")

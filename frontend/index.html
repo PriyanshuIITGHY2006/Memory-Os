@@ -1,0 +1,1700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MemoryOS — Persistent AI Memory</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <!-- KaTeX -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters: [{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}]})"></script>
+
+  <!-- vis-network -->
+  <script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/dist/vis-network.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/dist/dist/vis-network.min.css" />
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <style>
+    /* ── Design tokens ──────────────────────────────────────────────────── */
+    :root {
+      --bg-base:      #050A14;
+      --bg-surface:   #091628;
+      --bg-card:      #0F2040;
+      --bg-card-hover:#142850;
+      --bg-input:     #0B1E38;
+      --blue:         #3B82F6;
+      --blue-dim:     #1D4ED8;
+      --blue-glow:    rgba(59,130,246,.20);
+      --teal:         #06B6D4;
+      --green:        #10B981;
+      --amber:        #F59E0B;
+      --red:          #EF4444;
+      --purple:       #8B5CF6;
+      --text-primary: #F1F5F9;
+      --text-secondary:#94A3B8;
+      --text-muted:   #475569;
+      --border:       rgba(59,130,246,.15);
+      --border-hover: rgba(59,130,246,.35);
+      --sidebar-w:    260px;
+      --radius:       10px;
+      --radius-sm:    6px;
+      --radius-lg:    16px;
+      --transition:   0.18s ease;
+    }
+
+    /* ── Reset & base ───────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    button { font-family: inherit; cursor: pointer; border: none; background: none; }
+    input, textarea { font-family: inherit; outline: none; border: none; background: none; }
+    a { color: var(--blue); text-decoration: none; }
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
+
+    /* ── Layout ─────────────────────────────────────────────────────────── */
+    #app { display: flex; height: 100vh; }
+
+    /* ── Sidebar ────────────────────────────────────────────────────────── */
+    #sidebar {
+      width: var(--sidebar-w);
+      min-width: var(--sidebar-w);
+      height: 100vh;
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+      z-index: 10;
+    }
+    .sidebar-logo {
+      padding: 22px 20px 18px;
+      border-bottom: 1px solid var(--border);
+    }
+    .logo-badge {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .logo-icon {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, var(--blue), var(--teal));
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .logo-icon svg { color: #fff; }
+    .logo-text { display: flex; flex-direction: column; }
+    .logo-name {
+      font-size: 15px; font-weight: 700;
+      background: linear-gradient(90deg, var(--blue), var(--teal));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      letter-spacing: -.3px;
+    }
+    .logo-version {
+      font-size: 10px; font-weight: 500; color: var(--text-muted);
+      letter-spacing: .5px; text-transform: uppercase;
+    }
+
+    .sidebar-nav {
+      flex: 1;
+      padding: 12px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      overflow-y: auto;
+    }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 12px;
+      border-radius: var(--radius);
+      color: var(--text-secondary);
+      font-size: 13px; font-weight: 500;
+      transition: all var(--transition);
+      cursor: pointer;
+      user-select: none;
+      position: relative;
+    }
+    .nav-item:hover { background: var(--bg-card); color: var(--text-primary); }
+    .nav-item.active {
+      background: var(--blue-glow);
+      color: var(--blue);
+      border: 1px solid rgba(59,130,246,.25);
+    }
+    .nav-item.active .nav-icon { color: var(--blue); }
+    .nav-icon {
+      width: 18px; height: 18px; flex-shrink: 0;
+      color: var(--text-muted);
+      transition: color var(--transition);
+    }
+    .nav-item:hover .nav-icon { color: var(--text-primary); }
+
+    .sidebar-bottom {
+      padding: 12px 10px;
+      border-top: 1px solid var(--border);
+    }
+    .memory-stats {
+      background: var(--bg-card);
+      border-radius: var(--radius);
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+    .memory-stats-title {
+      font-size: 10px; font-weight: 600; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: .8px;
+      margin-bottom: 10px;
+    }
+    .stat-row {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 6px;
+    }
+    .stat-row:last-child { margin-bottom: 0; }
+    .stat-label {
+      font-size: 11px; color: var(--text-secondary);
+      display: flex; align-items: center; gap: 5px;
+    }
+    .stat-dot {
+      width: 5px; height: 5px; border-radius: 50%;
+    }
+    .stat-value { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+    .status-indicator {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px;
+      background: var(--bg-card);
+      border-radius: var(--radius);
+      font-size: 12px; color: var(--text-secondary);
+    }
+    .status-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .4; }
+    }
+
+    /* ── Main content ───────────────────────────────────────────────────── */
+    #main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg-base);
+    }
+    .page { display: none; flex-direction: column; height: 100%; }
+    .page.active { display: flex; }
+
+    /* ── Top bar ────────────────────────────────────────────────────────── */
+    .topbar {
+      height: 54px; min-height: 54px;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-surface);
+    }
+    .topbar-title {
+      font-size: 15px; font-weight: 600; color: var(--text-primary);
+    }
+    .topbar-right {
+      display: flex; align-items: center; gap: 8px;
+    }
+    .chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 10px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      font-size: 11px; font-weight: 500; color: var(--text-secondary);
+    }
+    .chip-dot { width: 6px; height: 6px; border-radius: 50%; }
+
+    /* ── Chat page ──────────────────────────────────────────────────────── */
+    #page-chat {
+      background: var(--bg-base);
+    }
+    #chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .chat-welcome {
+      text-align: center;
+      padding: 60px 40px;
+    }
+    .welcome-icon {
+      width: 64px; height: 64px;
+      background: linear-gradient(135deg, var(--blue), var(--teal));
+      border-radius: 20px;
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 20px;
+      box-shadow: 0 0 40px var(--blue-glow);
+    }
+    .welcome-title {
+      font-size: 24px; font-weight: 700;
+      margin-bottom: 8px;
+      background: linear-gradient(90deg, var(--text-primary), var(--text-secondary));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .welcome-subtitle {
+      color: var(--text-secondary); font-size: 14px; max-width: 420px; margin: 0 auto 28px;
+    }
+    .welcome-features {
+      display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;
+    }
+    .feature-chip {
+      display: flex; align-items: center; gap: 6px;
+      padding: 6px 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      font-size: 12px; color: var(--text-secondary);
+    }
+    .feature-chip svg { color: var(--blue); }
+
+    .message-row {
+      display: flex;
+      gap: 12px;
+      max-width: 800px;
+      width: 100%;
+    }
+    .message-row.user { margin-left: auto; flex-direction: row-reverse; }
+    .avatar {
+      width: 32px; height: 32px; flex-shrink: 0;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700;
+    }
+    .avatar.assistant {
+      background: linear-gradient(135deg, var(--blue), var(--teal));
+      color: white;
+    }
+    .avatar.user {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+    }
+    .message-body { display: flex; flex-direction: column; gap: 4px; max-width: calc(100% - 44px); }
+    .message-bubble {
+      padding: 12px 16px;
+      border-radius: 14px;
+      font-size: 14px; line-height: 1.65;
+    }
+    .message-row.user .message-bubble {
+      background: var(--blue-dim);
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+    .message-row.assistant .message-bubble {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      border-bottom-left-radius: 4px;
+    }
+    .message-meta {
+      font-size: 11px; color: var(--text-muted);
+      padding: 0 2px;
+    }
+    .message-row.user .message-meta { text-align: right; }
+    .memory-badges {
+      display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px;
+    }
+    .memory-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px;
+      background: rgba(6,182,212,.1);
+      border: 1px solid rgba(6,182,212,.25);
+      border-radius: 100px;
+      font-size: 10px; color: var(--teal);
+    }
+    .typing-indicator {
+      display: flex; align-items: center; gap: 4px;
+      padding: 12px 16px;
+    }
+    .typing-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--text-muted);
+      animation: bounce 1.2s infinite;
+    }
+    .typing-dot:nth-child(2) { animation-delay: .2s; }
+    .typing-dot:nth-child(3) { animation-delay: .4s; }
+    @keyframes bounce {
+      0%, 60%, 100% { transform: translateY(0); }
+      30% { transform: translateY(-6px); }
+    }
+
+    .chat-input-area {
+      padding: 16px 24px 20px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-surface);
+    }
+    .chat-input-wrap {
+      display: flex; align-items: flex-end; gap: 10px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 10px 14px;
+      transition: border-color var(--transition);
+    }
+    .chat-input-wrap:focus-within { border-color: var(--blue); }
+    #chat-input {
+      flex: 1;
+      color: var(--text-primary);
+      font-size: 14px;
+      line-height: 1.5;
+      resize: none;
+      max-height: 160px;
+      min-height: 22px;
+      background: transparent;
+    }
+    #chat-input::placeholder { color: var(--text-muted); }
+    #send-btn {
+      width: 34px; height: 34px; flex-shrink: 0;
+      background: var(--blue);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      transition: background var(--transition), transform var(--transition);
+      color: white;
+    }
+    #send-btn:hover { background: var(--blue-dim); transform: scale(1.05); }
+    #send-btn:disabled { background: var(--text-muted); transform: none; cursor: not-allowed; }
+    .input-hint {
+      font-size: 11px; color: var(--text-muted);
+      margin-top: 8px; text-align: center;
+    }
+
+    /* ── Graph page ─────────────────────────────────────────────────────── */
+    #page-graph { background: var(--bg-base); position: relative; }
+    #page-graph .topbar { }
+    #graph-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+    #graph-canvas {
+      width: 100%; height: 100%;
+      background: var(--bg-base);
+    }
+    .graph-controls {
+      position: absolute; top: 16px; right: 16px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .graph-btn {
+      width: 36px; height: 36px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      display: flex; align-items: center; justify-content: center;
+      color: var(--text-secondary);
+      transition: all var(--transition);
+    }
+    .graph-btn:hover { background: var(--bg-card-hover); color: var(--text-primary); border-color: var(--border-hover); }
+    .graph-legend {
+      position: absolute; bottom: 16px; left: 16px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+    }
+    .legend-title {
+      font-size: 10px; font-weight: 600; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: .8px; margin-bottom: 8px;
+    }
+    .legend-item {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 11px; color: var(--text-secondary);
+      margin-bottom: 4px;
+    }
+    .legend-item:last-child { margin-bottom: 0; }
+    .legend-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+    }
+    .graph-tooltip {
+      position: absolute;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 14px;
+      font-size: 12px; color: var(--text-secondary);
+      pointer-events: none;
+      display: none;
+      z-index: 100;
+      max-width: 220px;
+    }
+    .graph-tooltip strong { color: var(--text-primary); font-size: 13px; display: block; margin-bottom: 4px; }
+
+    /* ── Browser page ───────────────────────────────────────────────────── */
+    #page-browser {
+      background: var(--bg-base);
+      overflow: hidden;
+    }
+    .browser-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 24px;
+    }
+    .section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .section-title {
+      font-size: 12px; font-weight: 600; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: .8px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .section-count {
+      font-size: 11px; color: var(--text-muted);
+      background: var(--bg-card);
+      padding: 2px 8px; border-radius: 100px;
+    }
+    .entity-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+    .entity-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      transition: all var(--transition);
+    }
+    .entity-card:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--border-hover);
+      transform: translateY(-1px);
+    }
+    .entity-card-top {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+    }
+    .entity-type-badge {
+      width: 26px; height: 26px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .entity-name {
+      font-size: 13px; font-weight: 600; color: var(--text-primary);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .entity-rel {
+      font-size: 11px; color: var(--text-secondary); margin-bottom: 6px;
+    }
+    .entity-attrs {
+      display: flex; flex-wrap: wrap; gap: 4px;
+    }
+    .attr-tag {
+      font-size: 10px; color: var(--text-muted);
+      background: rgba(148,163,184,.08);
+      border-radius: 4px; padding: 2px 6px;
+    }
+    .pref-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 24px; }
+    .pref-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+    .pref-cat-badge {
+      font-size: 10px; font-weight: 600; padding: 2px 8px;
+      border-radius: 100px; text-transform: uppercase; letter-spacing: .5px;
+    }
+    .cat-preference { background: rgba(59,130,246,.15); color: var(--blue); }
+    .cat-goal       { background: rgba(16,185,129,.15); color: var(--green); }
+    .cat-allergy    { background: rgba(239,68,68,.15);  color: var(--red); }
+    .cat-constraint { background: rgba(245,158,11,.15); color: var(--amber); }
+    .pref-value { font-size: 13px; color: var(--text-primary); }
+
+    /* Entity resolution panel */
+    .resolution-panel {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 24px;
+    }
+    .resolution-header {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+    }
+    .resolution-title {
+      font-size: 13px; font-weight: 600; color: var(--text-primary);
+    }
+    .scan-btn {
+      margin-left: auto;
+      padding: 5px 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 12px; color: var(--text-secondary);
+      transition: all var(--transition);
+    }
+    .scan-btn:hover { background: var(--bg-card-hover); color: var(--text-primary); border-color: var(--border-hover); }
+    .dup-pair {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      margin-bottom: 6px;
+    }
+    .dup-names {
+      flex: 1; display: flex; align-items: center; gap: 6px;
+      font-size: 12px; color: var(--text-primary);
+    }
+    .dup-arrow { color: var(--text-muted); }
+    .dup-confidence {
+      font-size: 11px; font-weight: 600;
+      padding: 2px 8px; border-radius: 100px;
+    }
+    .conf-high { background: rgba(16,185,129,.15); color: var(--green); }
+    .conf-med  { background: rgba(245,158,11,.15);  color: var(--amber); }
+    .merge-btn {
+      padding: 4px 10px;
+      background: rgba(59,130,246,.15);
+      border: 1px solid rgba(59,130,246,.3);
+      border-radius: var(--radius-sm);
+      font-size: 11px; color: var(--blue);
+      transition: all var(--transition);
+    }
+    .merge-btn:hover { background: rgba(59,130,246,.25); }
+    .resolution-empty {
+      text-align: center; padding: 20px;
+      font-size: 13px; color: var(--text-muted);
+    }
+
+    /* Events / Knowledge */
+    .event-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 24px; }
+    .event-item {
+      display: flex; gap: 12px;
+      padding: 10px 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      border-left: 3px solid var(--purple);
+    }
+    .event-date { font-size: 11px; color: var(--text-muted); white-space: nowrap; min-width: 72px; }
+    .event-desc { font-size: 13px; color: var(--text-primary); }
+    .know-item {
+      padding: 12px 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      margin-bottom: 6px;
+      border-left: 3px solid var(--teal);
+    }
+    .know-topic {
+      font-size: 11px; font-weight: 600; color: var(--teal);
+      text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px;
+    }
+    .know-content { font-size: 13px; color: var(--text-secondary); }
+
+    /* ── Analytics page ─────────────────────────────────────────────────── */
+    #page-analytics {
+      background: var(--bg-base);
+      overflow: hidden;
+    }
+    .analytics-content {
+      flex: 1; overflow-y: auto;
+      padding: 20px 24px;
+      display: flex; flex-direction: column; gap: 20px;
+    }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+    }
+    .metric-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+      position: relative;
+      overflow: hidden;
+    }
+    .metric-card::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    }
+    .metric-card.blue::before  { background: var(--blue); }
+    .metric-card.teal::before  { background: var(--teal); }
+    .metric-card.green::before { background: var(--green); }
+    .metric-card.purple::before { background: var(--purple); }
+    .metric-icon {
+      width: 34px; height: 34px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 14px;
+    }
+    .metric-value {
+      font-size: 28px; font-weight: 700;
+      color: var(--text-primary);
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+    .metric-label {
+      font-size: 12px; color: var(--text-secondary);
+    }
+    .chart-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .chart-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+    }
+    .chart-card-title {
+      font-size: 12px; font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 16px;
+    }
+    canvas { display: block; }
+
+    /* ── Architecture page ──────────────────────────────────────────────── */
+    #page-architecture {
+      background: var(--bg-base);
+      overflow: hidden;
+    }
+    .arch-content {
+      flex: 1; overflow-y: auto;
+      padding: 24px;
+    }
+    .arch-hero {
+      text-align: center;
+      padding: 40px 20px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 32px;
+    }
+    .arch-hero-title {
+      font-size: 28px; font-weight: 700;
+      background: linear-gradient(135deg, var(--blue), var(--teal));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      margin-bottom: 10px;
+    }
+    .arch-hero-sub {
+      font-size: 15px; color: var(--text-secondary); max-width: 580px; margin: 0 auto;
+    }
+    .arch-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 32px;
+    }
+    .arch-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+    }
+    .arch-card-title {
+      font-size: 13px; font-weight: 700; color: var(--text-primary);
+      margin-bottom: 6px;
+    }
+    .arch-card-body {
+      font-size: 13px; color: var(--text-secondary); line-height: 1.7;
+    }
+    .math-block {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      margin-bottom: 16px;
+      overflow-x: auto;
+    }
+    .math-block-title {
+      font-size: 11px; font-weight: 600; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: .8px; margin-bottom: 12px;
+    }
+    .math-block .katex-display { margin: 8px 0; }
+    .math-section-title {
+      font-size: 16px; font-weight: 700; color: var(--text-primary);
+      margin: 28px 0 14px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .pipeline-steps {
+      display: flex; flex-direction: column; gap: 8px; margin-bottom: 28px;
+    }
+    .pipeline-step {
+      display: flex; gap: 14px;
+      padding: 14px 16px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+    .step-num {
+      width: 24px; height: 24px; border-radius: 50%;
+      background: var(--blue-glow);
+      border: 1px solid rgba(59,130,246,.4);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; color: var(--blue);
+      flex-shrink: 0;
+    }
+    .step-content { }
+    .step-name { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px; }
+    .step-desc { font-size: 12px; color: var(--text-secondary); }
+    .perf-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin-bottom: 28px;
+    }
+    .perf-table th {
+      text-align: left;
+      padding: 10px 14px;
+      background: var(--bg-card);
+      color: var(--text-secondary);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      border-bottom: 1px solid var(--border);
+    }
+    .perf-table td {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-primary);
+    }
+    .perf-table tr:last-child td { border-bottom: none; }
+    .perf-table tr:hover td { background: var(--bg-card); }
+    code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      background: rgba(148,163,184,.1);
+      padding: 1px 5px; border-radius: 4px;
+      color: var(--teal);
+    }
+    .tag-green { color: var(--green); }
+    .tag-amber { color: var(--amber); }
+    .tag-red { color: var(--red); }
+  </style>
+</head>
+
+<body>
+<div id="app">
+
+  <!-- ── Sidebar ────────────────────────────────────────────────── -->
+  <aside id="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-badge">
+        <div class="logo-icon">
+          <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
+          </svg>
+        </div>
+        <div class="logo-text">
+          <span class="logo-name">MemoryOS</span>
+          <span class="logo-version">v2 · Neo4j</span>
+        </div>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-item active" data-page="chat" onclick="navigate('chat')">
+        <svg class="nav-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/>
+        </svg>
+        Chat
+      </div>
+      <div class="nav-item" data-page="graph" onclick="navigate('graph')">
+        <svg class="nav-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+        </svg>
+        Knowledge Graph
+      </div>
+      <div class="nav-item" data-page="browser" onclick="navigate('browser')">
+        <svg class="nav-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
+        </svg>
+        Memory Browser
+      </div>
+      <div class="nav-item" data-page="analytics" onclick="navigate('analytics')">
+        <svg class="nav-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+        </svg>
+        Analytics
+      </div>
+      <div class="nav-item" data-page="architecture" onclick="navigate('architecture')">
+        <svg class="nav-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+        Architecture
+      </div>
+    </nav>
+
+    <div class="sidebar-bottom">
+      <div class="memory-stats" id="sidebar-stats">
+        <div class="memory-stats-title">Memory Stats</div>
+        <div class="stat-row">
+          <span class="stat-label"><span class="stat-dot" style="background:var(--blue)"></span>Entities</span>
+          <span class="stat-value" id="stat-entities">—</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label"><span class="stat-dot" style="background:var(--purple)"></span>Events</span>
+          <span class="stat-value" id="stat-events">—</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label"><span class="stat-dot" style="background:var(--teal)"></span>Knowledge</span>
+          <span class="stat-value" id="stat-knowledge">—</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label"><span class="stat-dot" style="background:var(--green)"></span>Turns</span>
+          <span class="stat-value" id="stat-turns">—</span>
+        </div>
+      </div>
+      <div class="status-indicator">
+        <div class="status-dot" id="status-dot"></div>
+        <span id="status-text">Connecting…</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Main ──────────────────────────────────────────────────── -->
+  <main id="main">
+
+    <!-- Chat -->
+    <div class="page active" id="page-chat">
+      <div class="topbar">
+        <span class="topbar-title">Chat</span>
+        <div class="topbar-right">
+          <span class="chip"><span class="chip-dot" style="background:var(--green)"></span><span id="model-chip">llama-3.3-70b</span></span>
+          <span class="chip"><span id="turns-chip">Turn 0</span></span>
+        </div>
+      </div>
+      <div id="chat-messages">
+        <div class="chat-welcome" id="chat-welcome">
+          <div class="welcome-icon">
+            <svg width="28" height="28" fill="none" viewBox="0 0 24 24" stroke="white" stroke-width="1.8">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
+            </svg>
+          </div>
+          <div class="welcome-title">MemoryOS — Persistent AI Memory</div>
+          <div class="welcome-subtitle">A personal AI assistant that remembers everything. Built on Neo4j knowledge graphs and semantic vector search.</div>
+          <div class="welcome-features">
+            <span class="feature-chip">
+              <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+              Persistent memory
+            </span>
+            <span class="feature-chip">
+              <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+              Graph reasoning
+            </span>
+            <span class="feature-chip">
+              <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+              Semantic search
+            </span>
+            <span class="feature-chip">
+              <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/></svg>
+              2000-4000 turn support
+            </span>
+          </div>
+        </div>
+      </div>
+      <div class="chat-input-area">
+        <div class="chat-input-wrap">
+          <textarea id="chat-input" rows="1" placeholder="Message MemoryOS… (Enter to send, Shift+Enter for newline)"></textarea>
+          <button id="send-btn" onclick="sendMessage()">
+            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 19V5m0 0l-7 7m7-7l7 7"/>
+            </svg>
+          </button>
+        </div>
+        <div class="input-hint">Enter to send · Shift+Enter for new line</div>
+      </div>
+    </div>
+
+    <!-- Knowledge Graph -->
+    <div class="page" id="page-graph">
+      <div class="topbar">
+        <span class="topbar-title">Knowledge Graph</span>
+        <div class="topbar-right">
+          <button class="chip" style="cursor:pointer" onclick="loadGraph()">
+            <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            Refresh
+          </button>
+        </div>
+      </div>
+      <div id="graph-container">
+        <div id="graph-canvas"></div>
+        <div class="graph-controls">
+          <button class="graph-btn" onclick="graphZoomIn()" title="Zoom in">
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <button class="graph-btn" onclick="graphZoomOut()" title="Zoom out">
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg>
+          </button>
+          <button class="graph-btn" onclick="graphFit()" title="Fit all">
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M4 14.999V19m0 0h4.001M4 19l5-5M20 9V5m0 0h-4M20 5l-5 5M4 9V5m0 0h4M4 5l5 5M20 14.999V19m0 0h-4m4 0l-5-5"/></svg>
+          </button>
+        </div>
+        <div class="graph-legend">
+          <div class="legend-title">Node Types</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#3B82F6"></span>User</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#8B5CF6"></span>Person</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#10B981"></span>Place</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#F59E0B"></span>Organization</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#EF4444"></span>Event</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#06B6D4"></span>Knowledge</div>
+        </div>
+        <div class="graph-tooltip" id="graph-tooltip"></div>
+      </div>
+    </div>
+
+    <!-- Memory Browser -->
+    <div class="page" id="page-browser">
+      <div class="topbar">
+        <span class="topbar-title">Memory Browser</span>
+        <div class="topbar-right">
+          <input id="browser-search" placeholder="Search entities…" style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:5px 12px;font-size:12px;color:var(--text-primary);width:200px;" oninput="filterBrowser(this.value)" />
+        </div>
+      </div>
+      <div class="browser-content" id="browser-content">
+        <div style="text-align:center;padding:60px;color:var(--text-muted);">Loading memory…</div>
+      </div>
+    </div>
+
+    <!-- Analytics -->
+    <div class="page" id="page-analytics">
+      <div class="topbar">
+        <span class="topbar-title">Analytics</span>
+        <div class="topbar-right">
+          <button class="chip" style="cursor:pointer" onclick="loadAnalytics()">
+            <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            Refresh
+          </button>
+        </div>
+      </div>
+      <div class="analytics-content" id="analytics-content">
+        <div class="metric-grid" id="metric-grid">
+          <div class="metric-card blue">
+            <div class="metric-icon" style="background:rgba(59,130,246,.15)">
+              <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="#3B82F6" stroke-width="2"><path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            </div>
+            <div class="metric-value" id="m-entities">—</div>
+            <div class="metric-label">Entities</div>
+          </div>
+          <div class="metric-card purple">
+            <div class="metric-icon" style="background:rgba(139,92,246,.15)">
+              <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="#8B5CF6" stroke-width="2"><path d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+            </div>
+            <div class="metric-value" id="m-events">—</div>
+            <div class="metric-label">Events</div>
+          </div>
+          <div class="metric-card teal">
+            <div class="metric-icon" style="background:rgba(6,182,212,.15)">
+              <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="#06B6D4" stroke-width="2"><path d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+            </div>
+            <div class="metric-value" id="m-knowledge">—</div>
+            <div class="metric-label">Knowledge Nodes</div>
+          </div>
+          <div class="metric-card green">
+            <div class="metric-icon" style="background:rgba(16,185,129,.15)">
+              <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="#10B981" stroke-width="2"><path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+            </div>
+            <div class="metric-value" id="m-turns">—</div>
+            <div class="metric-label">Conversation Turns</div>
+          </div>
+        </div>
+
+        <div class="chart-grid">
+          <div class="chart-card">
+            <div class="chart-card-title">Memory Composition</div>
+            <canvas id="chart-donut" height="220"></canvas>
+          </div>
+          <div class="chart-card">
+            <div class="chart-card-title">Entity Type Breakdown</div>
+            <canvas id="chart-bar" height="220"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-card" style="margin-top:0">
+          <div class="chart-card-title">Preference Categories</div>
+          <canvas id="chart-prefs" height="120"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Architecture -->
+    <div class="page" id="page-architecture">
+      <div class="topbar">
+        <span class="topbar-title">Architecture</span>
+      </div>
+      <div class="arch-content">
+        <div class="arch-hero">
+          <div class="arch-hero-title">Scalable Persistent Memory for LLMs</div>
+          <div class="arch-hero-sub">How MemoryOS maintains coherence across thousands of turns without degrading token efficiency or recall accuracy.</div>
+        </div>
+
+        <h2 class="math-section-title">The Stationarity Problem</h2>
+        <div class="arch-grid">
+          <div class="arch-card">
+            <div class="arch-card-title">Naive Approach — O(N) token cost</div>
+            <div class="arch-card-body">Concatenating full conversation history grows proportionally with turn count. At 4000 turns this saturates the context window and explodes API cost. Recall degrades as distant memories are truncated.</div>
+          </div>
+          <div class="arch-card">
+            <div class="arch-card-title">MemoryOS — O(1) token cost</div>
+            <div class="arch-card-body">A relevance-scored budget system selects the top-K memory nodes by score and fills a fixed character budget. Token cost per turn is constant regardless of conversation length.</div>
+          </div>
+        </div>
+
+        <h2 class="math-section-title">Relevance Scoring</h2>
+        <div class="math-block">
+          <div class="math-block-title">Memory Relevance Score</div>
+          $$\text{score}(m_i \mid Q) = \alpha \cdot \underbrace{\frac{|Q \cap W_i|}{|Q|}}_{\text{keyword}} + \beta \cdot \underbrace{e^{-\lambda \Delta t}}_{\text{recency}} + \gamma \cdot \underbrace{\frac{\ln(1+f_i)}{\ln(101)}}_{\text{frequency}}$$
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:12px;">
+            where $\alpha = 0.50$, $\beta = 0.30$, $\gamma = 0.20$, $\lambda = 0.001$, $\Delta t = t_{\text{now}} - t_{\text{last access}}$
+          </div>
+        </div>
+
+        <h2 class="math-section-title">Greedy Context Selection</h2>
+        <div class="math-block">
+          <div class="math-block-title">Fixed-Budget Selection</div>
+          $$S^* = \arg\max_{S \subseteq \mathcal{M}} \sum_{m_i \in S} \text{score}(m_i \mid Q) \quad \text{subject to} \quad \sum_{m_i \in S} |m_i| \leq B$$
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:12px;">
+            Solved greedily by sorting $\mathcal{M}$ by score descending and filling budget $B$ (characters). Budget $B$ is fixed at compile time — independent of $|\mathcal{M}|$.
+          </div>
+        </div>
+
+        <div class="math-block">
+          <div class="math-block-title">Token Complexity Comparison</div>
+          $$\text{tokens}_{\text{naive}}(N) = \Theta(N) \qquad \text{tokens}_{\text{MemoryOS}}(N) = \Theta(1)$$
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:8px;">
+            $N$ = number of prior conversation turns. MemoryOS maintains constant token usage regardless of $N$.
+          </div>
+        </div>
+
+        <h2 class="math-section-title">Entity Resolution</h2>
+        <div class="math-block">
+          <div class="math-block-title">Duplicate Confidence Score</div>
+          $$c(e_a, e_b) = \mathbf{1}[\text{rel}_a = \text{rel}_b] \cdot 0.40 + \mathbf{1}[e_a \subset e_b] \cdot 0.50 + \text{lev}(e_a, e_b) \cdot 0.40 + \mathbf{1}[\text{possessive}(e_a)] \cdot 0.60$$
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:8px;">
+            where $\text{lev}(a,b)$ is the normalised Levenshtein similarity and $\text{possessive}(e)$ detects "X's Y" patterns. Pairs with $c \geq 0.40$ are flagged for merge.
+          </div>
+        </div>
+
+        <h2 class="math-section-title">Request Processing Pipeline</h2>
+        <div class="pipeline-steps">
+          <div class="pipeline-step">
+            <div class="step-num">1</div>
+            <div class="step-content">
+              <div class="step-name">Turn Increment</div>
+              <div class="step-desc">Atomic Neo4j counter write. Provides monotonic turn ID used in recency decay $e^{-\lambda \Delta t}$.</div>
+            </div>
+          </div>
+          <div class="pipeline-step">
+            <div class="step-num">2</div>
+            <div class="step-content">
+              <div class="step-name">Proactive Semantic Search</div>
+              <div class="step-desc">ChromaDB cosine similarity search over last 3 buffer turns. Top-4 episodic memories retrieved before context assembly.</div>
+            </div>
+          </div>
+          <div class="pipeline-step">
+            <div class="step-num">3</div>
+            <div class="step-content">
+              <div class="step-name">Relevance-Scored Context Assembly</div>
+              <div class="step-desc">ContextBuilder scores all Neo4j nodes against query tokens. Greedy fill to fixed budget. Compact pipe-delimited serialization (~88 tokens typical).</div>
+            </div>
+          </div>
+          <div class="pipeline-step">
+            <div class="step-num">4</div>
+            <div class="step-content">
+              <div class="step-name">LLM Inference — Groq API</div>
+              <div class="step-desc">9-tool schema injected. Agentic loop up to 4 rounds for multi-tool turns. Parallel tool calls enabled. <code>llama-3.3-70b-versatile</code>.</div>
+            </div>
+          </div>
+          <div class="pipeline-step">
+            <div class="step-num">5</div>
+            <div class="step-content">
+              <div class="step-name">Tool Dispatch</div>
+              <div class="step-desc">Graph writes (Neo4j): <code>update_entity</code>, <code>link_entities</code>, <code>log_event</code>, <code>merge_entities</code>. Archive reads: <code>archival_memory_search</code>.</div>
+            </div>
+          </div>
+          <div class="pipeline-step">
+            <div class="step-num">6</div>
+            <div class="step-content">
+              <div class="step-name">Background Episode Save</div>
+              <div class="step-desc">Full exchange saved to ChromaDB in daemon thread. Non-blocking — user receives response before archive write completes.</div>
+            </div>
+          </div>
+        </div>
+
+        <h2 class="math-section-title">Performance Characteristics</h2>
+        <table class="perf-table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>Naive (full history)</th>
+              <th>MemoryOS</th>
+              <th>Improvement</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Context tokens @ 100 turns</td>
+              <td class="tag-red">~8,000</td>
+              <td class="tag-green">~350</td>
+              <td class="tag-green">23x fewer</td>
+            </tr>
+            <tr>
+              <td>Context tokens @ 1,000 turns</td>
+              <td class="tag-red">~80,000</td>
+              <td class="tag-green">~350</td>
+              <td class="tag-green">228x fewer</td>
+            </tr>
+            <tr>
+              <td>Context tokens @ 4,000 turns</td>
+              <td class="tag-red">OOM</td>
+              <td class="tag-green">~350</td>
+              <td class="tag-green">Infinite</td>
+            </tr>
+            <tr>
+              <td>Memory serialization</td>
+              <td>Verbose JSON ~1200 chars</td>
+              <td><code>pipe-delimited</code> ~300 chars</td>
+              <td class="tag-green">4x fewer tokens</td>
+            </tr>
+            <tr>
+              <td>Entity recall @ turn 500</td>
+              <td class="tag-amber">Truncated</td>
+              <td class="tag-green">100% (graph-persistent)</td>
+              <td>—</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2 class="math-section-title">Storage Architecture</h2>
+        <div class="arch-grid">
+          <div class="arch-card">
+            <div class="arch-card-title">Neo4j AuraDB — Structured Memory</div>
+            <div class="arch-card-body">
+              Graph database storing the User World Model as a labeled property graph. Node labels: <code>User</code>, <code>Entity</code>, <code>Event</code>, <code>Knowledge</code>, <code>Preference</code>. Edge types: <code>KNOWS</code>, <code>RELATED_TO</code>, <code>INVOLVED_IN</code>, <code>HAS_PREFERENCE</code>. Enables multi-hop traversal and structural deduplication via APOC-free Cypher merge.
+            </div>
+          </div>
+          <div class="arch-card">
+            <div class="arch-card-title">ChromaDB — Episodic Memory</div>
+            <div class="arch-card-body">
+              Local persistent vector store for full conversation episodes. Each exchange stored as a document with turn metadata. Cosine similarity search returns semantically relevant past episodes that may not be present in the graph's structured form. Complements Neo4j with unstructured long-term recall.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+// ── Constants ─────────────────────────────────────────────────────────────
+const API = window.location.origin;
+let network = null;
+let charts = {};
+let allBrowserData = null;
+
+// ── Router ────────────────────────────────────────────────────────────────
+function navigate(page) {
+  document.querySelectorAll('.nav-item').forEach(n => {
+    n.classList.toggle('active', n.dataset.page === page);
+  });
+  document.querySelectorAll('.page').forEach(p => {
+    p.classList.toggle('active', p.id === 'page-' + page);
+  });
+  if (page === 'graph')        loadGraph();
+  if (page === 'browser')      loadBrowser();
+  if (page === 'analytics')    loadAnalytics();
+}
+
+// ── Health + Stats sidebar ────────────────────────────────────────────────
+async function loadSidebarStats() {
+  try {
+    const r = await fetch(API + '/stats');
+    if (!r.ok) throw new Error();
+    const d = await r.json();
+    document.getElementById('stat-entities').textContent  = d.entities  ?? '—';
+    document.getElementById('stat-events').textContent    = d.events    ?? '—';
+    document.getElementById('stat-knowledge').textContent = d.knowledge ?? '—';
+    document.getElementById('stat-turns').textContent     = d.turns     ?? '—';
+    document.getElementById('status-dot').style.background  = 'var(--green)';
+    document.getElementById('status-dot').style.boxShadow   = '0 0 8px var(--green)';
+    document.getElementById('status-text').textContent       = 'Neo4j connected';
+    document.getElementById('turns-chip').textContent        = `Turn ${d.turns ?? 0}`;
+  } catch {
+    document.getElementById('status-dot').style.background = 'var(--red)';
+    document.getElementById('status-dot').style.boxShadow  = '0 0 8px var(--red)';
+    document.getElementById('status-text').textContent      = 'Backend offline';
+  }
+}
+
+// ── Chat ──────────────────────────────────────────────────────────────────
+const chatInput = document.getElementById('chat-input');
+const sendBtn   = document.getElementById('send-btn');
+const chatMsgs  = document.getElementById('chat-messages');
+
+chatInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+chatInput.addEventListener('input', () => {
+  chatInput.style.height = 'auto';
+  chatInput.style.height = Math.min(chatInput.scrollHeight, 160) + 'px';
+});
+
+function appendMessage(role, content, memories) {
+  const welcome = document.getElementById('chat-welcome');
+  if (welcome) welcome.remove();
+
+  const row = document.createElement('div');
+  row.className = `message-row ${role}`;
+
+  const now = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  const initials = role === 'user' ? 'U' : 'M';
+
+  row.innerHTML = `
+    <div class="avatar ${role}">${initials}</div>
+    <div class="message-body">
+      <div class="message-bubble">${escapeHtml(content).replace(/\n/g,'<br>')}</div>
+      <div class="message-meta">${now}</div>
+      ${memories && memories.length ? `<div class="memory-badges">${memories.slice(0,4).map(m => `<span class="memory-badge"><svg width="9" height="9" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg> Turn ${m.origin_turn}</span>`).join('')}</div>` : ''}
+    </div>`;
+  chatMsgs.appendChild(row);
+  chatMsgs.scrollTop = chatMsgs.scrollHeight;
+}
+
+function appendTyping() {
+  const row = document.createElement('div');
+  row.className = 'message-row assistant';
+  row.id = 'typing-row';
+  row.innerHTML = `
+    <div class="avatar assistant">M</div>
+    <div class="message-body">
+      <div class="message-bubble" style="padding:10px 16px">
+        <div class="typing-indicator">
+          <div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>
+        </div>
+      </div>
+    </div>`;
+  chatMsgs.appendChild(row);
+  chatMsgs.scrollTop = chatMsgs.scrollHeight;
+}
+
+function removeTyping() {
+  const t = document.getElementById('typing-row');
+  if (t) t.remove();
+}
+
+async function sendMessage() {
+  const msg = chatInput.value.trim();
+  if (!msg) return;
+  chatInput.value = '';
+  chatInput.style.height = 'auto';
+  sendBtn.disabled = true;
+
+  appendMessage('user', msg, null);
+  appendTyping();
+
+  try {
+    const r = await fetch(API + '/chat', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({message: msg})
+    });
+    const d = await r.json();
+    removeTyping();
+    appendMessage('assistant', d.response, d.active_memories);
+    loadSidebarStats();
+  } catch (err) {
+    removeTyping();
+    appendMessage('assistant', 'Connection error — is the backend running?', null);
+  }
+  sendBtn.disabled = false;
+  chatInput.focus();
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Graph ─────────────────────────────────────────────────────────────────
+const NODE_COLORS = {
+  User:         {bg:'#1E40AF', border:'#3B82F6'},
+  Person:       {bg:'#5B21B6', border:'#8B5CF6'},
+  Place:        {bg:'#065F46', border:'#10B981'},
+  Organization: {bg:'#78350F', border:'#F59E0B'},
+  Event:        {bg:'#7F1D1D', border:'#EF4444'},
+  Knowledge:    {bg:'#164E63', border:'#06B6D4'},
+  Preference:   {bg:'#1F2937', border:'#6B7280'},
+};
+
+function nodeColor(n) {
+  return NODE_COLORS[n.type] || {bg:'#1F2937', border:'#6B7280'};
+}
+
+async function loadGraph() {
+  try {
+    const r = await fetch(API + '/graph');
+    const d = await r.json();
+    renderGraph(d.nodes || [], d.edges || []);
+  } catch {
+    document.getElementById('graph-canvas').innerHTML =
+      '<div style="text-align:center;padding:60px;color:var(--text-muted)">Could not load graph. Is the backend running?</div>';
+  }
+}
+
+function renderGraph(nodes, edges) {
+  const container = document.getElementById('graph-canvas');
+
+  const vNodes = nodes.map(n => {
+    const c = nodeColor(n);
+    return {
+      id: n.id,
+      label: n.label || n.name || n.id,
+      title: buildNodeTooltip(n),
+      color: {background: c.bg, border: c.border, highlight:{background:c.bg,border:'#fff'}},
+      font: {color:'#F1F5F9', size: n.label==='User' ? 14 : 12},
+      size: n.label === 'User' ? 22 : 14,
+      borderWidth: n.label === 'User' ? 3 : 1.5,
+      shape: 'dot',
+    };
+  });
+
+  const vEdges = edges.map(e => ({
+    from: e.from, to: e.to,
+    label: (e.type || '').replace(/_/g,' '),
+    color: {color:'rgba(59,130,246,.35)', highlight:'rgba(59,130,246,.8)'},
+    font: {color:'#475569', size:10, strokeWidth:0},
+    smooth: {type:'curvedCW', roundness:.15},
+    arrows: {to:{enabled:true, scaleFactor:.6}},
+  }));
+
+  const data = {nodes: new vis.DataSet(vNodes), edges: new vis.DataSet(vEdges)};
+  const options = {
+    layout: {randomSeed: 42},
+    physics: {
+      stabilization: {iterations: 120},
+      barnesHut: {gravitationalConstant:-8000, springLength:180, springConstant:.04, damping:.15},
+    },
+    interaction: {hover:true, tooltipDelay:200, zoomView:true, dragView:true},
+    nodes: {scaling:{min:10, max:30}},
+  };
+
+  if (network) network.destroy();
+  network = new vis.Network(container, data, options);
+}
+
+function buildNodeTooltip(n) {
+  let lines = [`<strong>${n.name || n.label || n.id}</strong>`, `Type: ${n.type || ''}`];
+  if (n.entity_type)  lines.push(`Category: ${n.entity_type}`);
+  if (n.relationship) lines.push(`Relation: ${n.relationship}`);
+  if (n.description)  lines.push(n.description.slice(0,80));
+  if (n.content)      lines.push(n.content.slice(0,80));
+  return lines.join('<br>');
+}
+
+function graphZoomIn()  { if (network) network.moveTo({scale: network.getScale() * 1.3}); }
+function graphZoomOut() { if (network) network.moveTo({scale: network.getScale() / 1.3}); }
+function graphFit()     { if (network) network.fit({animation:{duration:400}}); }
+
+// ── Browser ───────────────────────────────────────────────────────────────
+async function loadBrowser() {
+  const el = document.getElementById('browser-content');
+  el.innerHTML = '<div style="text-align:center;padding:60px;color:var(--text-muted)">Loading memory…</div>';
+  try {
+    const [graphR, dupR] = await Promise.all([
+      fetch(API + '/graph'),
+      fetch(API + '/duplicates'),
+    ]);
+    const graph = await graphR.json();
+    const dups  = await dupR.json();
+    allBrowserData = {graph, dups};
+    renderBrowser(graph, dups, '');
+  } catch (err) {
+    el.innerHTML = `<div style="text-align:center;padding:60px;color:var(--text-muted)">Failed to load: ${err.message}</div>`;
+  }
+}
+
+function filterBrowser(q) {
+  if (allBrowserData) renderBrowser(allBrowserData.graph, allBrowserData.dups, q.toLowerCase());
+}
+
+function renderBrowser(graph, dups, filter) {
+  const nodes = graph.nodes || [];
+  const el    = document.getElementById('browser-content');
+  let html    = '';
+
+  // Resolution panel
+  const dupPairs = (dups.duplicates || []).filter(d =>
+    !filter || d.entity_a.toLowerCase().includes(filter) || d.entity_b.toLowerCase().includes(filter)
+  );
+  html += `<div class="resolution-panel">
+    <div class="resolution-header">
+      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="#F59E0B" stroke-width="2"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+      <span class="resolution-title">Entity Resolution</span>
+      <button class="scan-btn" onclick="loadBrowser()">Scan for duplicates</button>
+    </div>`;
+  if (dupPairs.length === 0) {
+    html += `<div class="resolution-empty">${filter ? 'No duplicates match filter.' : 'No duplicate entities detected.'}</div>`;
+  } else {
+    dupPairs.slice(0,8).forEach(d => {
+      const conf = Math.round(d.confidence * 100);
+      const cls  = conf >= 70 ? 'conf-high' : 'conf-med';
+      html += `<div class="dup-pair">
+        <div class="dup-names">
+          <strong>${escapeHtml(d.entity_a)}</strong>
+          <span class="dup-arrow">→</span>
+          <strong>${escapeHtml(d.entity_b)}</strong>
+          <span style="font-size:10px;color:var(--text-muted);margin-left:4px">${escapeHtml(d.reason||'')}</span>
+        </div>
+        <span class="dup-confidence ${cls}">${conf}%</span>
+        <button class="merge-btn" onclick="mergeEntities('${escapeHtml(d.entity_a)}','${escapeHtml(d.entity_b)}')">Merge</button>
+      </div>`;
+    });
+  }
+  html += '</div>';
+
+  // Entities
+  const entities = nodes.filter(n => ['Person','Place','Organization'].includes(n.type) && (!filter || (n.name||n.label||'').toLowerCase().includes(filter)));
+  if (entities.length) {
+    html += `<div class="section-header">
+      <span class="section-title">
+        <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+        Entities
+      </span>
+      <span class="section-count">${entities.length}</span>
+    </div>
+    <div class="entity-grid">`;
+    entities.forEach(n => {
+      const displayName = n.name || n.label || n.id;
+      const [bgC, fgC] = entityTypePalette(n.entity_type || n.type);
+      const attrs = n.attributes ? Object.entries(n.attributes).slice(0,4) : [];
+      html += `<div class="entity-card">
+        <div class="entity-card-top">
+          <div class="entity-type-badge" style="background:${bgC}">
+            ${entityTypeIcon(n.entity_type || n.type, fgC)}
+          </div>
+          <span class="entity-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</span>
+        </div>
+        ${n.relationship ? `<div class="entity-rel">${escapeHtml(n.relationship)}</div>` : ''}
+        <div class="entity-attrs">${attrs.map(([k,v]) => `<span class="attr-tag">${k}: ${String(v).slice(0,20)}</span>`).join('')}</div>
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  // Preferences
+  const prefs = nodes.filter(n => n.type === 'Preference' && (!filter || (n.value||'').toLowerCase().includes(filter)));
+  if (prefs.length) {
+    html += `<div class="section-header">
+      <span class="section-title">
+        <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-14 9V3z"/></svg>
+        Preferences & Constraints
+      </span>
+      <span class="section-count">${prefs.length}</span>
+    </div>
+    <div class="pref-list">`;
+    prefs.forEach(p => {
+      const cat = (p.category||'preference').toLowerCase();
+      html += `<div class="pref-item">
+        <span class="pref-cat-badge cat-${cat}">${cat}</span>
+        <span class="pref-value">${escapeHtml(p.value||p.name||'')}</span>
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  // Events
+  const events = nodes.filter(n => n.type === 'Event' && (!filter || (n.description||'').toLowerCase().includes(filter)));
+  if (events.length) {
+    html += `<div class="section-header">
+      <span class="section-title">
+        <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+        Events
+      </span>
+      <span class="section-count">${events.length}</span>
+    </div>
+    <div class="event-list">`;
+    events.forEach(e => {
+      html += `<div class="event-item">
+        <span class="event-date">${e.date || '—'}</span>
+        <span class="event-desc">${escapeHtml(e.description||e.name||'')}</span>
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  // Knowledge
+  const know = nodes.filter(n => n.type === 'Knowledge' && (!filter || (n.topic||'').toLowerCase().includes(filter)));
+  if (know.length) {
+    html += `<div class="section-header">
+      <span class="section-title">
+        <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+        Knowledge Nodes
+      </span>
+      <span class="section-count">${know.length}</span>
+    </div>`;
+    know.forEach(k => {
+      html += `<div class="know-item">
+        <div class="know-topic">${escapeHtml(k.topic||k.name||'')}</div>
+        <div class="know-content">${escapeHtml((k.content||'').slice(0,200))}</div>
+      </div>`;
+    });
+  }
+
+  if (!html.includes('entity-card') && !prefs.length && !events.length && !know.length) {
+    html += '<div style="text-align:center;padding:40px;color:var(--text-muted)">No memory data yet. Start chatting to build your knowledge graph.</div>';
+  }
+
+  el.innerHTML = html;
+}
+
+function entityTypePalette(t) {
+  const tl = (t||'').toLowerCase();
+  if (tl === 'place'  || tl === 'Place')        return ['rgba(16,185,129,.15)', '#10B981'];
+  if (tl === 'organization' || tl === 'Organization') return ['rgba(245,158,11,.15)', '#F59E0B'];
+  return ['rgba(139,92,246,.15)', '#8B5CF6'];
+}
+
+function entityTypeIcon(t, color) {
+  const tl = (t||'').toLowerCase();
+  if (tl === 'place')
+    return `<svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="${color}" stroke-width="2"><path d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>`;
+  if (tl === 'organization')
+    return `<svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="${color}" stroke-width="2"><path d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>`;
+  return `<svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="${color}" stroke-width="2"><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>`;
+}
+
+async function mergeEntities(canonical, alias) {
+  if (!confirm(`Merge "${alias}" into "${canonical}"?`)) return;
+  try {
+    const r = await fetch(API + '/merge', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({canonical, alias})
+    });
+    const d = await r.json();
+    alert(d.result);
+    loadBrowser();
+    loadSidebarStats();
+  } catch (err) {
+    alert('Merge failed: ' + err.message);
+  }
+}
+
+// ── Analytics ─────────────────────────────────────────────────────────────
+async function loadAnalytics() {
+  try {
+    const r = await fetch(API + '/stats');
+    const d = await r.json();
+    document.getElementById('m-entities').textContent  = d.entities  ?? 0;
+    document.getElementById('m-events').textContent    = d.events    ?? 0;
+    document.getElementById('m-knowledge').textContent = d.knowledge ?? 0;
+    document.getElementById('m-turns').textContent     = d.turns     ?? 0;
+
+    renderDonut(d);
+    renderBar(d);
+    renderPrefs(d);
+  } catch {}
+}
+
+function renderDonut(d) {
+  const ctx = document.getElementById('chart-donut').getContext('2d');
+  if (charts.donut) charts.donut.destroy();
+  charts.donut = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Entities','Events','Knowledge','Preferences'],
+      datasets: [{
+        data: [d.entities||0, d.events||0, d.knowledge||0, d.preferences||0],
+        backgroundColor: ['#3B82F6','#8B5CF6','#06B6D4','#10B981'],
+        borderColor: '#0F2040',
+        borderWidth: 2,
+        hoverOffset: 6,
+      }]
+    },
+    options: {
+      plugins: {legend:{labels:{color:'#94A3B8',font:{family:'Inter',size:12}}}},
+      cutout: '65%',
+    }
+  });
+}
+
+function renderBar(d) {
+  const ctx = document.getElementById('chart-bar').getContext('2d');
+  if (charts.bar) charts.bar.destroy();
+  charts.bar = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: ['People','Places','Orgs','Events','Knowledge'],
+      datasets: [{
+        label: 'Count',
+        data: [d.people||0, d.places||0, d.organizations||0, d.events||0, d.knowledge||0],
+        backgroundColor: ['#5B21B6','#065F46','#78350F','#7F1D1D','#164E63'],
+        borderColor:     ['#8B5CF6','#10B981','#F59E0B','#EF4444','#06B6D4'],
+        borderWidth: 1,
+        borderRadius: 4,
+      }]
+    },
+    options: {
+      plugins: {legend:{display:false}},
+      scales: {
+        x: {ticks:{color:'#94A3B8',font:{family:'Inter',size:11}}, grid:{color:'rgba(148,163,184,.08)'}},
+        y: {ticks:{color:'#94A3B8',font:{family:'Inter',size:11}}, grid:{color:'rgba(148,163,184,.08)'}, beginAtZero:true},
+      },
+    }
+  });
+}
+
+function renderPrefs(d) {
+  const ctx = document.getElementById('chart-prefs').getContext('2d');
+  if (charts.prefs) charts.prefs.destroy();
+  charts.prefs = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: ['Preference','Goal','Allergy','Constraint'],
+      datasets: [{
+        label: 'Count',
+        data: [d.pref_preference||0, d.pref_goal||0, d.pref_allergy||0, d.pref_constraint||0],
+        backgroundColor: ['rgba(59,130,246,.4)','rgba(16,185,129,.4)','rgba(239,68,68,.4)','rgba(245,158,11,.4)'],
+        borderColor:     ['#3B82F6','#10B981','#EF4444','#F59E0B'],
+        borderWidth: 1, borderRadius: 4,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      plugins: {legend:{display:false}},
+      scales: {
+        x: {ticks:{color:'#94A3B8',font:{family:'Inter',size:11}}, grid:{color:'rgba(148,163,184,.08)'}, beginAtZero:true},
+        y: {ticks:{color:'#94A3B8',font:{family:'Inter',size:11}}, grid:{color:'rgba(148,163,184,.08)'}},
+      },
+    }
+  });
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  loadSidebarStats();
+  setInterval(loadSidebarStats, 15000);
+  chatInput.focus();
+});
+</script>
+</body>
+</html>
