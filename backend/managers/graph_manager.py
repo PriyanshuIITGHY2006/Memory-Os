@@ -1,7 +1,10 @@
 """
-MemoryOS v2 — Neo4j Graph Manager
-==================================
-Replaces the flat user_state.json with a live property graph.
+MemoryOS v2 — Neo4j Graph Manager (multi-tenant)
+==================================================
+Each GraphManager instance is scoped to a single user_id.  All nodes that
+belong to a user are either reached through their User node (via KNOWS /
+EXPERIENCED / AWARE_OF / HAS_PREFERENCE) or carry a `user_id` property on
+the node itself for fast direct lookups.
 
 Node labels:   User · Person · Place · Organization · Event · Knowledge · Preference
 Relationships: KNOWS · EXPERIENCED · AWARE_OF · HAS_PREFERENCE · RELATED_TO · INVOLVED_IN
@@ -9,12 +12,18 @@ Relationships: KNOWS · EXPERIENCED · AWARE_OF · HAS_PREFERENCE · RELATED_TO 
 
 import re
 import logging
+import warnings
 from datetime import datetime
 
 from neo4j import GraphDatabase
 import config
 
 logger = logging.getLogger(__name__)
+
+# Suppress harmless "label/relationship does not exist yet" warnings from Neo4j
+# These appear on first run before the schema is populated — not actual errors.
+logging.getLogger("neo4j").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*does not exist.*")
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +58,6 @@ def _possessive_rel_match(name_a: str, rel_b: str) -> bool:
         return False
     name_lower = name_a.lower()
     rel_lower  = rel_b.lower().strip()
-    # strip possessive: "priyanshu's mother" → "mother"
     if "'" in name_lower:
         suffix = name_lower.split("'", 1)[-1].lstrip("s").strip()
         if rel_lower in suffix or suffix in rel_lower:
@@ -101,37 +109,40 @@ def _label(entity_type: str) -> str:
 
 class GraphManager:
     """
-    Single source of truth for structured memory.
+    Single source of truth for one user's structured memory.
 
     All public methods return a short status string so the Orchestrator
     can pass it back to the LLM as a tool result.
     """
 
-    def __init__(self):
+    def __init__(self, user_id: str):
+        self.user_id = user_id
         self.driver = GraphDatabase.driver(
             config.NEO4J_URI,
             auth=(config.NEO4J_USER, config.NEO4J_PASSWORD),
         )
         self._setup_schema()
         self._ensure_user_node()
-        logger.info("[GraphManager] Connected to Neo4j at %s", config.NEO4J_URI)
+        logger.info("[GraphManager] Connected for user=%s at %s", user_id, config.NEO4J_URI)
 
     # ------------------------------------------------------------------
     # Schema bootstrap
     # ------------------------------------------------------------------
 
     def _setup_schema(self):
+        # Composite uniqueness constraints — require Neo4j 5.x
         constraints = [
             "CREATE CONSTRAINT user_singleton   IF NOT EXISTS FOR (u:User)         REQUIRE u.id IS UNIQUE",
-            "CREATE CONSTRAINT person_name      IF NOT EXISTS FOR (p:Person)       REQUIRE p.name IS UNIQUE",
-            "CREATE CONSTRAINT place_name       IF NOT EXISTS FOR (p:Place)        REQUIRE p.name IS UNIQUE",
-            "CREATE CONSTRAINT org_name         IF NOT EXISTS FOR (o:Organization) REQUIRE o.name IS UNIQUE",
-            "CREATE CONSTRAINT knowledge_topic  IF NOT EXISTS FOR (k:Knowledge)    REQUIRE k.topic IS UNIQUE",
+            "CREATE CONSTRAINT person_user      IF NOT EXISTS FOR (p:Person)       REQUIRE (p.user_id, p.name) IS UNIQUE",
+            "CREATE CONSTRAINT place_user       IF NOT EXISTS FOR (p:Place)        REQUIRE (p.user_id, p.name) IS UNIQUE",
+            "CREATE CONSTRAINT org_user         IF NOT EXISTS FOR (o:Organization) REQUIRE (o.user_id, o.name) IS UNIQUE",
+            "CREATE CONSTRAINT knowledge_user   IF NOT EXISTS FOR (k:Knowledge)    REQUIRE (k.user_id, k.topic) IS UNIQUE",
             "CREATE CONSTRAINT pref_id          IF NOT EXISTS FOR (p:Preference)   REQUIRE p.id IS UNIQUE",
         ]
         indexes = [
             "CREATE INDEX event_turn  IF NOT EXISTS FOR (e:Event) ON (e.turn)",
             "CREATE INDEX event_date  IF NOT EXISTS FOR (e:Event) ON (e.date)",
+            "CREATE INDEX event_user  IF NOT EXISTS FOR (e:Event) ON (e.user_id)",
         ]
         with self.driver.session() as s:
             for q in constraints + indexes:
@@ -144,9 +155,10 @@ class GraphManager:
         with self.driver.session() as s:
             s.run(
                 """
-                MERGE (u:User {id: 'main'})
+                MERGE (u:User {id: $uid})
                 ON CREATE SET u.total_turns = 0, u.created_at = $now
                 """,
+                uid=self.user_id,
                 now=datetime.now().isoformat(),
             )
 
@@ -158,17 +170,19 @@ class GraphManager:
         with self.driver.session() as s:
             rec = s.run(
                 """
-                MATCH (u:User {id: 'main'})
+                MATCH (u:User {id: $uid})
                 SET u.total_turns = coalesce(u.total_turns, 0) + 1
                 RETURN u.total_turns AS turn
-                """
+                """,
+                uid=self.user_id,
             ).single()
         return rec["turn"] if rec else 1
 
     def _current_turn(self) -> int:
         with self.driver.session() as s:
             rec = s.run(
-                "MATCH (u:User {id:'main'}) RETURN coalesce(u.total_turns,0) AS t"
+                "MATCH (u:User {id: $uid}) RETURN coalesce(u.total_turns,0) AS t",
+                uid=self.user_id,
             ).single()
         return rec["t"] if rec else 0
 
@@ -180,7 +194,8 @@ class GraphManager:
         key_clean = re.sub(r"[^a-zA-Z0-9_]", "_", key.strip().lower())
         with self.driver.session() as s:
             s.run(
-                f"MATCH (u:User {{id:'main'}}) SET u.`{key_clean}` = $v, u.updated_at = $now",
+                f"MATCH (u:User {{id: $uid}}) SET u.`{key_clean}` = $v, u.updated_at = $now",
+                uid=self.user_id,
                 v=value,
                 now=datetime.now().isoformat(),
             )
@@ -192,10 +207,11 @@ class GraphManager:
             with self.driver.session() as s:
                 rec = s.run(
                     """
-                    MATCH (u:User {id:'main'})-[r:HAS_PREFERENCE]->(p:Preference)
+                    MATCH (u:User {id: $uid})-[r:HAS_PREFERENCE]->(p:Preference)
                     WHERE toLower(p.value) CONTAINS toLower($v)
                     DELETE r, p RETURN count(p) AS n
                     """,
+                    uid=self.user_id,
                     v=value_to_remove,
                 ).single()
             n = rec["n"] if rec else 0
@@ -203,7 +219,10 @@ class GraphManager:
         else:
             safe = re.sub(r"[^a-zA-Z0-9_]", "_", key_clean)
             with self.driver.session() as s:
-                s.run(f"MATCH (u:User {{id:'main'}}) REMOVE u.`{safe}`")
+                s.run(
+                    f"MATCH (u:User {{id: $uid}}) REMOVE u.`{safe}`",
+                    uid=self.user_id,
+                )
             return f"Profile field removed: {key_clean}"
 
     # ------------------------------------------------------------------
@@ -228,24 +247,26 @@ class GraphManager:
         with self.driver.session() as s:
             s.run(
                 f"""
-                MERGE (e:{label} {{name: $name}})
+                MERGE (e:{label} {{name: $name, user_id: $uid}})
                 ON CREATE SET e.created_turn = $turn, e.access_count = 1
                 ON MATCH  SET e.access_count = coalesce(e.access_count,0)+1,
                               e.last_seen_turn = $turn
                 SET e += $attrs
                 """,
                 name=clean_name,
+                uid=self.user_id,
                 turn=turn,
                 attrs=attrs,
             )
             if relationship:
                 s.run(
                     f"""
-                    MATCH (u:User {{id:'main'}})
-                    MATCH (e:{label} {{name:$name}})
+                    MATCH (u:User {{id: $uid}})
+                    MATCH (e:{label} {{name: $name, user_id: $uid}})
                     MERGE (u)-[r:KNOWS]->(e)
                     SET r.relationship = $rel, r.last_seen = $now
                     """,
+                    uid=self.user_id,
                     name=clean_name,
                     rel=relationship,
                     now=datetime.now().isoformat(),
@@ -255,14 +276,16 @@ class GraphManager:
     def link_entities(
         self, name_a: str, name_b: str, rel_type: str, description: str = ""
     ) -> str:
-        """Create an edge between two existing entity nodes."""
+        """Create an edge between two existing entity nodes owned by this user."""
         safe_rel = re.sub(r"[^A-Z0-9_]", "_", rel_type.upper().strip())
         turn = self._current_turn()
         with self.driver.session() as s:
             rec = s.run(
                 """
-                MATCH (a) WHERE a.name = $na AND NOT a:User AND NOT a:Event AND NOT a:Knowledge
-                MATCH (b) WHERE b.name = $nb AND NOT b:User AND NOT b:Event AND NOT b:Knowledge
+                MATCH (a) WHERE a.name = $na AND a.user_id = $uid
+                  AND NOT a:User AND NOT a:Event AND NOT a:Knowledge
+                MATCH (b) WHERE b.name = $nb AND b.user_id = $uid
+                  AND NOT b:User AND NOT b:Event AND NOT b:Knowledge
                 MERGE (a)-[r:RELATED_TO {rel_type: $rt}]->(b)
                 ON CREATE SET r.description = $desc, r.created_turn = $turn
                 ON MATCH  SET r.updated_turn = $turn
@@ -270,6 +293,7 @@ class GraphManager:
                 """,
                 na=name_a,
                 nb=name_b,
+                uid=self.user_id,
                 rt=safe_rel,
                 desc=description,
                 turn=turn,
@@ -281,8 +305,13 @@ class GraphManager:
     def delete_entity(self, name: str) -> str:
         with self.driver.session() as s:
             rec = s.run(
-                "MATCH (e {name:$n}) WHERE NOT e:User DETACH DELETE e RETURN count(e) AS d",
+                """
+                MATCH (e {name: $n, user_id: $uid})
+                WHERE NOT e:User
+                DETACH DELETE e RETURN count(e) AS d
+                """,
                 n=name,
+                uid=self.user_id,
             ).single()
         return f"Deleted entity: {name}" if rec and rec["d"] else f"Not found: {name}"
 
@@ -292,7 +321,7 @@ class GraphManager:
 
     def merge_entities(self, canonical_name: str, alias_name: str) -> str:
         """
-        Merge alias_name into canonical_name.
+        Merge alias_name into canonical_name (scoped to this user).
 
         Algorithm (no APOC required):
           1. Verify both nodes exist.
@@ -307,11 +336,13 @@ class GraphManager:
             # 1. Verify
             check = s.run(
                 """
-                MATCH (c) WHERE c.name = $cn AND NOT c:User AND NOT c:Event AND NOT c:Knowledge
-                MATCH (a) WHERE a.name = $an AND NOT a:User AND NOT a:Event AND NOT a:Knowledge
+                MATCH (c) WHERE c.name = $cn AND c.user_id = $uid
+                  AND NOT c:User AND NOT c:Event AND NOT c:Knowledge
+                MATCH (a) WHERE a.name = $an AND a.user_id = $uid
+                  AND NOT a:User AND NOT a:Event AND NOT a:Knowledge
                 RETURN c.name AS cn, a.name AS an
                 """,
-                cn=canonical_name, an=alias_name,
+                cn=canonical_name, an=alias_name, uid=self.user_id,
             ).single()
             if not check:
                 return f"Entity resolution failed: could not find both '{canonical_name}' and '{alias_name}'"
@@ -319,59 +350,59 @@ class GraphManager:
             # 2. Re-point KNOWS (User → alias) to (User → canonical)
             s.run(
                 """
-                MATCH (u:User)-[r:KNOWS]->(a {name: $an})
-                MATCH (c {name: $cn}) WHERE NOT c:User
+                MATCH (u:User {id: $uid})-[r:KNOWS]->(a {name: $an, user_id: $uid})
+                MATCH (c {name: $cn, user_id: $uid}) WHERE NOT c:User
                 MERGE (u)-[r2:KNOWS]->(c)
                   ON CREATE SET r2.relationship = r.relationship,
                                 r2.last_seen    = r.last_seen
                 DELETE r
                 """,
-                cn=canonical_name, an=alias_name,
+                uid=self.user_id, cn=canonical_name, an=alias_name,
             )
 
             # 3. Outgoing RELATED_TO: alias → other  →  canonical → other
             s.run(
                 """
-                MATCH (a {name: $an})-[r:RELATED_TO]->(other)
-                MATCH (c {name: $cn})
+                MATCH (a {name: $an, user_id: $uid})-[r:RELATED_TO]->(other)
+                MATCH (c {name: $cn, user_id: $uid})
                 WHERE other.name <> $cn AND NOT other:User
                 MERGE (c)-[r2:RELATED_TO {rel_type: r.rel_type}]->(other)
                   ON CREATE SET r2.description   = r.description,
                                 r2.created_turn  = r.created_turn
                 DELETE r
                 """,
-                cn=canonical_name, an=alias_name,
+                uid=self.user_id, cn=canonical_name, an=alias_name,
             )
 
             # 4. Incoming RELATED_TO: other → alias  →  other → canonical
             s.run(
                 """
-                MATCH (other)-[r:RELATED_TO]->(a {name: $an})
-                MATCH (c {name: $cn})
+                MATCH (other)-[r:RELATED_TO]->(a {name: $an, user_id: $uid})
+                MATCH (c {name: $cn, user_id: $uid})
                 WHERE other.name <> $cn AND NOT other:User
                 MERGE (other)-[r2:RELATED_TO {rel_type: r.rel_type}]->(c)
                   ON CREATE SET r2.description   = r.description,
                                 r2.created_turn  = r.created_turn
                 DELETE r
                 """,
-                cn=canonical_name, an=alias_name,
+                uid=self.user_id, cn=canonical_name, an=alias_name,
             )
 
             # 5. INVOLVED_IN: alias → Event  →  canonical → Event
             s.run(
                 """
-                MATCH (a {name: $an})-[r:INVOLVED_IN]->(ev:Event)
-                MATCH (c {name: $cn})
+                MATCH (a {name: $an, user_id: $uid})-[r:INVOLVED_IN]->(ev:Event {user_id: $uid})
+                MATCH (c {name: $cn, user_id: $uid})
                 MERGE (c)-[:INVOLVED_IN]->(ev)
                 DELETE r
                 """,
-                cn=canonical_name, an=alias_name,
+                uid=self.user_id, cn=canonical_name, an=alias_name,
             )
 
             # 6. Record alias in canonical's aliases property
             s.run(
                 """
-                MATCH (c {name: $cn}), (a {name: $an})
+                MATCH (c {name: $cn, user_id: $uid}), (a {name: $an, user_id: $uid})
                 SET c.aliases = CASE
                     WHEN c.aliases IS NULL THEN a.name
                     ELSE c.aliases + '|' + a.name
@@ -379,16 +410,16 @@ class GraphManager:
                 SET c.access_count = coalesce(c.access_count, 0)
                                    + coalesce(a.access_count, 0)
                 """,
-                cn=canonical_name, an=alias_name,
+                uid=self.user_id, cn=canonical_name, an=alias_name,
             )
 
             # 7. Delete alias
             s.run(
-                "MATCH (a {name: $an}) WHERE NOT a:User DETACH DELETE a",
-                an=alias_name,
+                "MATCH (a {name: $an, user_id: $uid}) WHERE NOT a:User DETACH DELETE a",
+                an=alias_name, uid=self.user_id,
             )
 
-        logger.info("[GraphManager] Merged '%s' → '%s'", alias_name, canonical_name)
+        logger.info("[GraphManager] Merged '%s' → '%s' for user=%s", alias_name, canonical_name, self.user_id)
         return f"Resolved: '{alias_name}' merged into '{canonical_name}'"
 
     # ------------------------------------------------------------------
@@ -397,7 +428,7 @@ class GraphManager:
 
     def detect_duplicates(self) -> list:
         """
-        Return a ranked list of potentially duplicate entity pairs.
+        Return a ranked list of potentially duplicate entity pairs for this user.
 
         Signals (each independently scored, summed to confidence):
           S1 — Same relationship_to_user string (0.40)
@@ -405,17 +436,18 @@ class GraphManager:
           S3 — Levenshtein name similarity > 0.65 (similarity × 0.40)
           S4 — Possessive-pattern match: "X's Y" where Y's rel matches (0.60)
 
-        Pairs with combined confidence ≥ 0.40 are returned, sorted descending.
+        Pairs with combined confidence >= 0.40 are returned, sorted descending.
         """
         with self.driver.session() as s:
             rows = s.run(
                 """
-                MATCH (u:User {id:'main'})-[r:KNOWS]->(e)
+                MATCH (u:User {id: $uid})-[r:KNOWS]->(e)
                 RETURN e.name AS name,
                        r.relationship AS rel,
                        labels(e)[0] AS label,
                        coalesce(e.aliases, '') AS aliases
-                """
+                """,
+                uid=self.user_id,
             )
             entities = [
                 {
@@ -469,7 +501,6 @@ class GraphManager:
 
                 if score >= 0.40 and reasons:
                     seen.add(pair_key)
-                    # Shorter / simpler name is suggested canonical
                     if len(e1["name"]) <= len(e2["name"]) and "'" not in e1["name"]:
                         canonical, alias = e1["name"], e2["name"]
                     else:
@@ -494,18 +525,20 @@ class GraphManager:
     ) -> str:
         turn = self._current_turn()
         ev_date = date or datetime.now().strftime("%Y-%m-%d")
-        event_id = f"event_{turn}_{int(datetime.now().timestamp())}"
+        event_id = f"event_{self.user_id[:8]}_{turn}_{int(datetime.now().timestamp())}"
 
         with self.driver.session() as s:
             s.run(
                 """
-                MATCH (u:User {id:'main'})
+                MATCH (u:User {id: $uid})
                 CREATE (ev:Event {
                     id: $eid, description: $desc,
-                    date: $date, turn: $turn, created_at: $now
+                    date: $date, turn: $turn, created_at: $now,
+                    user_id: $uid
                 })
                 CREATE (u)-[:EXPERIENCED {turn: $turn}]->(ev)
                 """,
+                uid=self.user_id,
                 eid=event_id,
                 desc=description,
                 date=ev_date,
@@ -515,12 +548,13 @@ class GraphManager:
             for ent_name in (entities_involved or []):
                 s.run(
                     """
-                    MATCH (ev:Event {id:$eid})
-                    MATCH (e) WHERE e.name = $en AND NOT e:User
+                    MATCH (ev:Event {id: $eid, user_id: $uid})
+                    MATCH (e) WHERE e.name = $en AND e.user_id = $uid AND NOT e:User
                     MERGE (e)-[:INVOLVED_IN]->(ev)
                     """,
                     eid=event_id,
                     en=ent_name,
+                    uid=self.user_id,
                 )
         return f"Event logged at turn {turn}: {description[:60]}"
 
@@ -533,16 +567,17 @@ class GraphManager:
         with self.driver.session() as s:
             s.run(
                 """
-                MERGE (k:Knowledge {topic: $topic})
+                MERGE (k:Knowledge {topic: $topic, user_id: $uid})
                 ON CREATE SET k.created_turn = $turn, k.access_count = 0
                 SET k.content = $content,
                     k.last_updated_turn = $turn,
                     k.access_count = coalesce(k.access_count,0)+1
                 WITH k
-                MATCH (u:User {id:'main'})
+                MATCH (u:User {id: $uid})
                 MERGE (u)-[:AWARE_OF]->(k)
                 """,
                 topic=topic.lower().strip(),
+                uid=self.user_id,
                 content=content,
                 turn=turn,
             )
@@ -551,8 +586,9 @@ class GraphManager:
     def delete_knowledge(self, topic: str) -> str:
         with self.driver.session() as s:
             rec = s.run(
-                "MATCH (k:Knowledge {topic:$t}) DETACH DELETE k RETURN count(k) AS d",
+                "MATCH (k:Knowledge {topic: $t, user_id: $uid}) DETACH DELETE k RETURN count(k) AS d",
                 t=topic.lower(),
+                uid=self.user_id,
             ).single()
         return f"Deleted: {topic}" if rec and rec["d"] else f"Not found: {topic}"
 
@@ -561,19 +597,20 @@ class GraphManager:
     # ------------------------------------------------------------------
 
     def add_preference(self, value: str, category: str = "preference") -> str:
-        pref_id = f"pref_{_slugify(value)}"
+        pref_id = f"pref_{_slugify(self.user_id)}_{_slugify(value)}"
         with self.driver.session() as s:
             s.run(
                 """
                 MERGE (p:Preference {id: $pid})
-                SET p.value = $value, p.category = $cat
+                SET p.value = $value, p.category = $cat, p.user_id = $uid
                 WITH p
-                MATCH (u:User {id:'main'})
+                MATCH (u:User {id: $uid})
                 MERGE (u)-[:HAS_PREFERENCE]->(p)
                 """,
                 pid=pref_id,
                 value=value,
                 cat=category,
+                uid=self.user_id,
             )
         return f"Preference saved: [{category.upper()}] {value}"
 
@@ -583,16 +620,17 @@ class GraphManager:
 
     def graph_search(self, entity_name: str, depth: int = 2) -> str:
         with self.driver.session() as s:
-            # 1-hop
             rec = s.run(
                 """
-                MATCH (start) WHERE toLower(start.name) = toLower($name) AND NOT start:User
+                MATCH (start) WHERE toLower(start.name) = toLower($name)
+                  AND start.user_id = $uid AND NOT start:User
                 OPTIONAL MATCH (start)-[r]-(hop) WHERE NOT hop:User
                 RETURN start,
                        collect(DISTINCT {rel: type(r), rt: r.rel_type, n: hop}) AS conns
                 LIMIT 1
                 """,
                 name=entity_name,
+                uid=self.user_id,
             ).single()
 
         if not rec or not rec["start"]:
@@ -616,11 +654,13 @@ class GraphManager:
                 rows = s.run(
                     """
                     MATCH (start) WHERE toLower(start.name)=toLower($name)
+                      AND start.user_id = $uid
                     MATCH (start)-[]-(h1)-[]-(h2)
                     WHERE NOT h2:User AND h2 <> start
                     RETURN DISTINCT h2 LIMIT 8
                     """,
                     name=entity_name,
+                    uid=self.user_id,
                 )
                 second = [dict(r["h2"]) for r in rows if r["h2"]]
             if second:
@@ -654,10 +694,11 @@ class GraphManager:
             # --- User profile + preferences ---
             p_rec = s.run(
                 """
-                MATCH (u:User {id:'main'})
+                MATCH (u:User {id: $uid})
                 OPTIONAL MATCH (u)-[:HAS_PREFERENCE]->(p:Preference)
                 RETURN u, collect({v: p.value, cat: p.category}) AS prefs
-                """
+                """,
+                uid=self.user_id,
             ).single()
             user  = dict(p_rec["u"]) if p_rec else {}
             prefs = [x for x in (p_rec["prefs"] if p_rec else []) if x.get("v")]
@@ -665,13 +706,14 @@ class GraphManager:
             # --- Entities: all (scoring will rank them) ---
             ent_rows = s.run(
                 """
-                MATCH (u:User {id:'main'})-[r:KNOWS]->(e)
+                MATCH (u:User {id: $uid})-[r:KNOWS]->(e)
                 OPTIONAL MATCH (e)-[er:RELATED_TO]-(other)
                   WHERE NOT other:User
                 RETURN e, r.relationship AS user_rel,
                        collect(DISTINCT {rt: er.rel_type, nm: other.name}) AS links
                 ORDER BY coalesce(e.access_count,0) DESC LIMIT 40
-                """
+                """,
+                uid=self.user_id,
             )
             entities = []
             for row in ent_rows:
@@ -683,11 +725,12 @@ class GraphManager:
             # --- Events: recent 30 (scoring selects most relevant) ---
             ev_rows = s.run(
                 """
-                MATCH (u:User {id:'main'})-[:EXPERIENCED]->(ev:Event)
+                MATCH (u:User {id: $uid})-[:EXPERIENCED]->(ev:Event)
                 OPTIONAL MATCH (ent)-[:INVOLVED_IN]->(ev)
                 RETURN ev, collect(ent.name) AS involved
                 ORDER BY ev.turn DESC LIMIT 30
-                """
+                """,
+                uid=self.user_id,
             )
             events = []
             for row in ev_rows:
@@ -698,9 +741,10 @@ class GraphManager:
             # --- Knowledge: all (scoring selects most relevant) ---
             kn_rows = s.run(
                 """
-                MATCH (u:User {id:'main'})-[:AWARE_OF]->(k:Knowledge)
+                MATCH (u:User {id: $uid})-[:AWARE_OF]->(k:Knowledge)
                 RETURN k ORDER BY k.last_updated_turn DESC LIMIT 20
-                """
+                """,
+                uid=self.user_id,
             )
             knowledge = [dict(r["k"]) for r in kn_rows]
 
@@ -734,7 +778,10 @@ class GraphManager:
 
         with self.driver.session() as s:
             # User node
-            u_rec = s.run("MATCH (u:User {id:'main'}) RETURN u").single()
+            u_rec = s.run(
+                "MATCH (u:User {id: $uid}) RETURN u",
+                uid=self.user_id,
+            ).single()
             if u_rec:
                 u = dict(u_rec["u"])
                 nodes.append({
@@ -748,8 +795,9 @@ class GraphManager:
 
             # Entities
             for row in s.run(
-                "MATCH (u:User {id:'main'})-[r:KNOWS]->(e) "
-                "RETURN e, r.relationship AS rel, labels(e)[0] AS lbl"
+                "MATCH (u:User {id: $uid})-[r:KNOWS]->(e) "
+                "RETURN e, r.relationship AS rel, labels(e)[0] AS lbl",
+                uid=self.user_id,
             ):
                 e = dict(row["e"])
                 lbl = row["lbl"]
@@ -763,7 +811,7 @@ class GraphManager:
                     "entity_type": etype_map.get(lbl, "person"),
                     "relationship": row["rel"] or "",
                     "attributes": {k: v for k, v in e.items()
-                                   if k not in {"name","created_turn","last_seen_turn","access_count","aliases"}
+                                   if k not in {"name","created_turn","last_seen_turn","access_count","aliases","user_id"}
                                    and v is not None},
                     "color": TYPE_COLOR.get(lbl, "#888"),
                     "size": 22,
@@ -778,8 +826,11 @@ class GraphManager:
             # Entity ↔ entity relationships
             seen = set()
             for row in s.run(
-                "MATCH (a)-[r:RELATED_TO]-(b) WHERE NOT a:User AND NOT b:User "
-                "RETURN a.name AS an, b.name AS bn, r.rel_type AS rt LIMIT 50"
+                "MATCH (a)-[r:RELATED_TO]-(b) "
+                "WHERE a.user_id = $uid AND b.user_id = $uid "
+                "AND NOT a:User AND NOT b:User "
+                "RETURN a.name AS an, b.name AS bn, r.rel_type AS rt LIMIT 50",
+                uid=self.user_id,
             ):
                 a_id = f"e_{_slugify(row['an'] or '')}"
                 b_id = f"e_{_slugify(row['bn'] or '')}"
@@ -795,8 +846,9 @@ class GraphManager:
 
             # Events (last 12)
             for row in s.run(
-                "MATCH (u:User {id:'main'})-[:EXPERIENCED]->(ev:Event) "
-                "RETURN ev ORDER BY ev.turn DESC LIMIT 12"
+                "MATCH (u:User {id: $uid})-[:EXPERIENCED]->(ev:Event) "
+                "RETURN ev ORDER BY ev.turn DESC LIMIT 12",
+                uid=self.user_id,
             ):
                 ev   = dict(row["ev"])
                 nid  = ev.get("id", f"ev_{ev.get('turn')}")
@@ -819,8 +871,10 @@ class GraphManager:
                 })
                 # Event ↔ entity edges
                 for er in s.run(
-                    "MATCH (ent)-[:INVOLVED_IN]->(ev:Event {id:$eid}) RETURN ent.name AS n",
+                    "MATCH (ent)-[:INVOLVED_IN]->(ev:Event {id: $eid, user_id: $uid}) "
+                    "RETURN ent.name AS n",
                     eid=nid,
+                    uid=self.user_id,
                 ):
                     if er["n"]:
                         edges.append({
@@ -832,7 +886,8 @@ class GraphManager:
 
             # Preferences
             for row in s.run(
-                "MATCH (u:User {id:'main'})-[:HAS_PREFERENCE]->(p:Preference) RETURN p"
+                "MATCH (u:User {id: $uid})-[:HAS_PREFERENCE]->(p:Preference) RETURN p",
+                uid=self.user_id,
             ):
                 p   = dict(row["p"])
                 cat = p.get("category", "preference")
@@ -856,8 +911,9 @@ class GraphManager:
 
             # Knowledge
             for row in s.run(
-                "MATCH (u:User {id:'main'})-[:AWARE_OF]->(k:Knowledge) "
-                "RETURN k ORDER BY k.last_updated_turn DESC LIMIT 10"
+                "MATCH (u:User {id: $uid})-[:AWARE_OF]->(k:Knowledge) "
+                "RETURN k ORDER BY k.last_updated_turn DESC LIMIT 10",
+                uid=self.user_id,
             ):
                 k   = dict(row["k"])
                 nid = f"k_{_slugify(k.get('topic','?'))}"
@@ -888,7 +944,7 @@ class GraphManager:
         with self.driver.session() as s:
             main = s.run(
                 """
-                MATCH (u:User {id:'main'})
+                MATCH (u:User {id: $uid})
                 OPTIONAL MATCH (u)-[:KNOWS]->(ent)
                 OPTIONAL MATCH (u)-[:EXPERIENCED]->(ev:Event)
                 OPTIONAL MATCH (u)-[:AWARE_OF]->(kn:Knowledge)
@@ -898,20 +954,23 @@ class GraphManager:
                        count(DISTINCT ev)  AS evc,
                        count(DISTINCT kn)  AS kc,
                        count(DISTINCT pr)  AS pc
-                """
+                """,
+                uid=self.user_id,
             ).single()
 
             breakdown = {
                 row["t"]: row["c"]
                 for row in s.run(
-                    "MATCH (u:User {id:'main'})-[:KNOWS]->(e) "
-                    "RETURN labels(e)[0] AS t, count(e) AS c"
+                    "MATCH (u:User {id: $uid})-[:KNOWS]->(e) "
+                    "RETURN labels(e)[0] AS t, count(e) AS c",
+                    uid=self.user_id,
                 )
             }
 
             profile = {}
             pu = s.run(
-                "MATCH (u:User {id:'main'}) RETURN properties(u) AS p"
+                "MATCH (u:User {id: $uid}) RETURN properties(u) AS p",
+                uid=self.user_id,
             ).single()
             if pu:
                 skip = {"id", "total_turns", "created_at", "updated_at"}
@@ -920,8 +979,9 @@ class GraphManager:
             preferences = [
                 {"value": r["v"], "category": r["c"]}
                 for r in s.run(
-                    "MATCH (u:User {id:'main'})-[:HAS_PREFERENCE]->(p:Preference) "
-                    "RETURN p.value AS v, p.category AS c"
+                    "MATCH (u:User {id: $uid})-[:HAS_PREFERENCE]->(p:Preference) "
+                    "RETURN p.value AS v, p.category AS c",
+                    uid=self.user_id,
                 )
             ]
 
@@ -949,12 +1009,14 @@ class GraphManager:
             rows = s.run(
                 """
                 MATCH (e) WHERE (e:Person OR e:Place OR e:Organization OR e:Knowledge)
+                  AND e.user_id = $uid
                   AND (toLower(coalesce(e.name,''))    CONTAINS toLower($q)
                     OR toLower(coalesce(e.topic,''))   CONTAINS toLower($q)
                     OR toLower(coalesce(e.content,'')) CONTAINS toLower($q))
                 RETURN e, labels(e)[0] AS lbl LIMIT 12
                 """,
                 q=query,
+                uid=self.user_id,
             )
             return [{"node": dict(r["e"]), "label": r["lbl"]} for r in rows]
 
@@ -963,12 +1025,274 @@ class GraphManager:
     # ------------------------------------------------------------------
 
     def reset(self):
-        """Wipe all data, then recreate the User node."""
+        """Wipe only this user's memory graph, then recreate their User node."""
         with self.driver.session() as s:
-            s.run("MATCH (n) DETACH DELETE n")
+            # Delete all nodes reachable from this user (and the user node itself)
+            s.run(
+                """
+                MATCH (u:User {id: $uid})
+                OPTIONAL MATCH (u)-[*1..2]-(n)
+                WHERE NOT n:User
+                DETACH DELETE n
+                """,
+                uid=self.user_id,
+            )
+            s.run(
+                "MATCH (u:User {id: $uid}) DETACH DELETE u",
+                uid=self.user_id,
+            )
+            # Also clean up any orphaned user_id-scoped nodes
+            s.run(
+                """
+                MATCH (n) WHERE n.user_id = $uid AND NOT n:User
+                DETACH DELETE n
+                """,
+                uid=self.user_id,
+            )
         self._ensure_user_node()
-        logger.info("[GraphManager] Graph reset.")
+        logger.info("[GraphManager] Graph reset for user=%s", self.user_id)
+
+    def get_timeline(self, limit: int = 100) -> list:
+        """Return chronological timeline of events, knowledge, and entities for this user."""
+        with self.driver.session() as s:
+            events = s.run(
+                """
+                MATCH (u:User {id: $uid})-[:EXPERIENCED]->(e:Event)
+                RETURN 'event' AS type,
+                       e.description AS title,
+                       e.description AS content,
+                       e.date AS date,
+                       e.turn AS turn,
+                       e.created_at AS created_at
+                ORDER BY e.turn ASC
+                LIMIT $limit
+                """,
+                uid=self.user_id, limit=limit,
+            ).data()
+
+            knowledge = s.run(
+                """
+                MATCH (u:User {id: $uid})-[:AWARE_OF]->(k:Knowledge)
+                RETURN 'knowledge' AS type,
+                       k.topic AS title,
+                       k.content AS content,
+                       null AS date,
+                       k.created_turn AS turn,
+                       k.created_at AS created_at
+                ORDER BY k.created_turn ASC
+                LIMIT $limit
+                """,
+                uid=self.user_id, limit=limit,
+            ).data()
+
+            entities = s.run(
+                """
+                MATCH (u:User {id: $uid})-[:KNOWS]->(e)
+                WHERE e:Person OR e:Place OR e:Organization
+                RETURN toLower(labels(e)[0]) AS type,
+                       e.name AS title,
+                       e.relationship_to_user AS content,
+                       null AS date,
+                       e.first_seen_turn AS turn,
+                       e.created_at AS created_at
+                ORDER BY e.first_seen_turn ASC
+                LIMIT $limit
+                """,
+                uid=self.user_id, limit=limit,
+            ).data()
+
+        combined = events + knowledge + entities
+        combined.sort(key=lambda x: (x.get("turn") or 0))
+        return combined[:limit]
+
+    # ------------------------------------------------------------------
+    # Cross-session summaries
+    # ------------------------------------------------------------------
+
+    def save_session_summary(self, summary: str, start_turn: int, end_turn: int):
+        with self.driver.session() as s:
+            s.run(
+                """
+                MATCH (u:User {id: $uid})
+                CREATE (u)-[:HAD_SESSION]->(ss:SessionSummary {
+                    summary: $summary, start_turn: $start,
+                    end_turn: $end, created_at: $now
+                })
+                """,
+                uid=self.user_id, summary=summary,
+                start=start_turn, end=end_turn,
+                now=datetime.now().isoformat(),
+            )
+
+    def get_last_session_summary(self) -> dict | None:
+        with self.driver.session() as s:
+            rec = s.run(
+                """
+                MATCH (u:User {id: $uid})-[:HAD_SESSION]->(ss:SessionSummary)
+                RETURN ss ORDER BY ss.end_turn DESC LIMIT 1
+                """,
+                uid=self.user_id,
+            ).data()
+        return dict(rec[0]["ss"]) if rec else None
+
+    # ------------------------------------------------------------------
+    # Proactive nudges — stale entities
+    # ------------------------------------------------------------------
+
+    def get_stale_entities(self, turns_threshold: int = 30) -> list:
+        """Return entities not mentioned in the last N turns (good for nudges)."""
+        current = self._current_turn()
+        threshold = max(0, current - turns_threshold)
+        with self.driver.session() as s:
+            rows = s.run(
+                """
+                MATCH (u:User {id: $uid})-[r:KNOWS]->(e)
+                WHERE coalesce(e.last_seen_turn, e.created_turn, 0) < $threshold
+                  AND coalesce(e.access_count, 0) >= 2
+                RETURN e.name AS name, r.relationship AS rel, labels(e)[0] AS type,
+                       coalesce(e.last_seen_turn, e.created_turn, 0) AS last_seen
+                ORDER BY e.access_count DESC LIMIT 4
+                """,
+                uid=self.user_id, threshold=threshold,
+            ).data()
+        return [{"name": r["name"], "rel": r["rel"],
+                 "type": r["type"], "last_seen": r["last_seen"]} for r in rows]
+
+    # ------------------------------------------------------------------
+    # Lightweight graph snapshot (for turn-level memory diff)
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Hebbian co-activation learning
+    # ------------------------------------------------------------------
+
+    def hebbian_strengthen(self, entity_names: list[str], current_turn: int):
+        """
+        Strengthen edges between entities that were co-retrieved in the same turn.
+
+        Implements Hebb's rule: "neurons that fire together, wire together."
+
+            w_{ij}^{new} = w_{ij}^{old} + η   for all pairs (i,j)
+
+        where η = HEBBIAN_LEARNING_RATE. When co_activation_count reaches
+        HEBBIAN_PROMOTION_THRESH, a permanent RELATED_TO edge is written.
+
+        Runs in a background thread — non-blocking.
+        """
+        names = [n for n in entity_names if n]
+        if len(names) < 2:
+            return
+        η = config.HEBBIAN_LEARNING_RATE
+        thresh = config.HEBBIAN_PROMOTION_THRESH
+
+        with self.driver.session() as s:
+            for i in range(len(names)):
+                for j in range(i + 1, len(names)):
+                    a, b = names[i], names[j]
+                    try:
+                        s.run(
+                            """
+                            MATCH (x) WHERE x.name = $a AND x.user_id = $uid
+                            MATCH (y) WHERE y.name = $b AND y.user_id = $uid
+                            MERGE (x)-[r:RELATED_TO]-(y)
+                            ON CREATE SET r.co_activation_count = 1,
+                                          r.hebbian_weight = $eta,
+                                          r.rel_type = 'co_activated',
+                                          r.last_seen = $turn
+                            ON MATCH  SET r.co_activation_count =
+                                              coalesce(r.co_activation_count, 0) + 1,
+                                          r.hebbian_weight =
+                                              coalesce(r.hebbian_weight, 0) + $eta,
+                                          r.last_seen = $turn
+                            """,
+                            a=a, b=b, uid=self.user_id,
+                            eta=η, turn=current_turn,
+                        )
+                    except Exception:
+                        pass
+
+    def get_snapshot(self) -> dict:
+        with self.driver.session() as s:
+            rec = s.run(
+                """
+                MATCH (u:User {id: $uid})
+                OPTIONAL MATCH (u)-[:KNOWS]->(ent)
+                OPTIONAL MATCH (u)-[:EXPERIENCED]->(ev:Event)
+                OPTIONAL MATCH (u)-[:AWARE_OF]->(kn:Knowledge)
+                OPTIONAL MATCH (u)-[:HAS_PREFERENCE]->(pr:Preference)
+                RETURN count(DISTINCT ent) AS ec, count(DISTINCT ev) AS evc,
+                       count(DISTINCT kn) AS kc, count(DISTINCT pr) AS pc
+                """,
+                uid=self.user_id,
+            ).single()
+        return dict(rec) if rec else {"ec": 0, "evc": 0, "kc": 0, "pc": 0}
+
+    # ------------------------------------------------------------------
+    # Contradictions
+    # ------------------------------------------------------------------
+
+    def save_contradiction(self, field: str, old_val: str, new_val: str):
+        with self.driver.session() as s:
+            s.run(
+                """
+                MATCH (u:User {id: $uid})
+                MERGE (u)-[:HAS_CONTRADICTION]->(c:Contradiction {field: $field})
+                SET c.old_value = $old, c.new_value = $new,
+                    c.detected_at = $now, c.resolved = false
+                """,
+                uid=self.user_id, field=field,
+                old=old_val, new=new_val,
+                now=datetime.now().isoformat(),
+            )
+
+    def get_pending_contradictions(self) -> list:
+        with self.driver.session() as s:
+            rows = s.run(
+                """
+                MATCH (u:User {id: $uid})-[:HAS_CONTRADICTION]->(c:Contradiction {resolved: false})
+                RETURN c ORDER BY c.detected_at DESC LIMIT 5
+                """,
+                uid=self.user_id,
+            ).data()
+        return [dict(r["c"]) for r in rows]
+
+    def resolve_contradiction(self, field: str):
+        with self.driver.session() as s:
+            s.run(
+                """
+                MATCH (u:User {id: $uid})-[:HAS_CONTRADICTION]->(c:Contradiction {field: $field})
+                SET c.resolved = true
+                """,
+                uid=self.user_id, field=field,
+            )
+
+    # ------------------------------------------------------------------
+    # Raw profile read (for contradiction detection)
+    # ------------------------------------------------------------------
+
+    def get_profile_raw(self) -> dict:
+        with self.driver.session() as s:
+            rec = s.run(
+                "MATCH (u:User {id: $uid}) RETURN properties(u) AS p",
+                uid=self.user_id,
+            ).single()
+        if not rec:
+            return {}
+        skip = {"id", "total_turns", "created_at", "updated_at"}
+        return {k: v for k, v in dict(rec["p"]).items() if k not in skip and v}
+
+    def delete_user_graph(self):
+        """Permanently delete all graph data for this user (called on account deletion)."""
+        with self.driver.session() as s:
+            s.run(
+                """
+                MATCH (n) WHERE n.user_id = $uid OR (n:User AND n.id = $uid)
+                DETACH DELETE n
+                """,
+                uid=self.user_id,
+            )
+        logger.info("[GraphManager] All graph data deleted for user=%s", self.user_id)
 
     def close(self):
         self.driver.close()
-        logger.info("[GraphManager] Driver closed.")
+        logger.info("[GraphManager] Driver closed for user=%s", self.user_id)

@@ -1,11 +1,27 @@
 groq
 chromadb
-streamlit
 fastapi
-uvicorn
-requests
+uvicorn[standard]
 python-dotenv
-plotly
-pandas
 neo4j>=5.14.0
-pyvis>=0.3.2
+
+# Auth
+python-jose[cryptography]
+passlib[bcrypt]
+cryptography
+httpx
+email-validator
+
+# Rate limiting
+slowapi
+
+# Async file response
+aiofiles
+
+# PDF report generation
+reportlab>=4.0.0
+
+# File upload support
+python-multipart
+pdfplumber
+pypdf

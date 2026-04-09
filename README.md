@@ -1,371 +1,224 @@
-# 🧠 MemoryOS - Long-Form Memory System
+# MemoryOS
 
-## Hackathon Submission: Long-Form Memory Challenge
+**AI that remembers everything about you.**
 
-**Challenge:** Build a system that retains and recalls information across 1,000+ conversation turns in real-time.
-
----
-
-## 🎯 Problem Statement Addressed
-
-Modern AI systems suffer from:
-- **Limited context windows** - Can't replay full conversation history
-- **Memory decay** - Forget early information as conversations grow
-- **Latency issues** - Slow when full history is repeatedly injected
-
-### Our Solution: MemoryOS
-
-A **three-tier memory architecture** that combines:
-1. **Buffer Memory** - Recent context (last 10 turns)
-2. **Core Memory** - Critical facts (JSON + Vector DB)
-3. **Archival Memory** - Full conversation history (ChromaDB)
+MemoryOS is a production-ready, multi-tenant personal memory system. Every conversation is stored in a living knowledge graph that grows smarter over time. Research-grade memory algorithms surface exactly the right context at every turn — within a constant token budget.
 
 ---
 
-## 🏆 Key Features (Aligned with Evaluation Criteria)
+## Features
 
-### 1. Long-Range Memory Recall (HIGH WEIGHT)
-- ✅ **Vector search with cosine similarity** - Retrieves Turn 1 information at Turn 1000
-- ✅ **Dual indexing** - Both semantic (vectors) and structured (JSON) storage
-- ✅ **Confidence scoring** - Distance-based thresholding (< 1.3 = relevant)
+### Memory Architecture
+- **Neo4j Knowledge Graph** — entities, relationships, events, preferences, and session summaries as a traversable graph
+- **ChromaDB Vector Store** — semantic episodic and factual memory with cosine-similarity retrieval
+- **Surprise-Weighted Adaptive Forgetting** — novel memories decay 3× slower: `λ_eff = λ · (1 − α · σ)`
+- **Personalized PageRank Spreading Activation** — 4-iteration PPR over entity graph surfaces implicit connections
+- **Hebbian Co-activation Learning** — edge weights strengthen between frequently co-retrieved entities
+- **CLS Consolidation Engine** — background daemon promotes high-surprise episodes into structured graph nodes (McClelland et al., 1995)
 
-### 2. Accuracy Across 1-1,000 Turns (HIGH WEIGHT)
-- ✅ **Entity deduplication** - Merges "Tajinder" and "Tajinder Bagga"
-- ✅ **Temporal boosting** - Year-specific queries get priority (threshold: 1.5 vs 1.2)
-- ✅ **Metadata enrichment** - Tracks origin_turn, last_used_turn, confidence
+### Chat & Streaming
+- SSE streaming chat with real-time token-by-token responses
+- WebSocket live graph push broadcast after each turn
+- Memory diff chips showing exactly what was stored after each message
+- **Ask Past Self mode** — search only archival memory, bypassing the live graph
+- Voice input via Web Speech API with error toast notifications
 
-### 3. Retrieval Relevance (MEDIUM WEIGHT)
-- ✅ **Semantic search** - ChromaDB with 384-dim embeddings
-- ✅ **Context filtering** - Only relevant memories injected (top-k = 3-15)
-- ✅ **Proactive retrieval** - Searches before LLM call, not reactively
+### File & Media Memory
+- **Photos** — Groq Vision (`llama-3.2-11b-vision-preview`) describes images in rich detail and stores them as memories
+- **PDFs** — `pdfplumber` + `pypdf` extract and chunk text into searchable archival memories
+- **Audio** — Groq Whisper (`whisper-large-v3`) transcribes audio files
+- **Text / CSV / DOCX** — direct text extraction into memory
+- File library with authenticated thumbnail grid, lightbox viewer, and delete
+- Attach previously uploaded files to any chat message using only the summary — O(1) token cost
 
-### 4. Latency Impact (MEDIUM WEIGHT)
-- ✅ **Async background saves** - Threading for non-blocking writes
-- ✅ **Limited context injection** - Max 10 turns in buffer
-- ✅ **Vector DB caching** - ChromaDB persistent client
+### Analytics & Insights
+- **Knowledge gaps** — LLM audits the graph and surfaces 5 missing information areas with suggested questions
+- **Contradiction detection** — background thread raises conflicts between profile values
+- **Memory timeline** — chronological view of all entities, events, and knowledge grouped by turn
+- **Annual PDF report** — 7-page "Year in Memory" typeset report
 
-### 5. Memory Hallucination Avoidance (MEDIUM WEIGHT)
-- ✅ **Threshold enforcement** - Rejects low-confidence matches
-- ✅ **Source tracking** - All memories tagged with origin_turn
-- ✅ **No duplicates protocol** - System checks before saving
-
----
-
-## 📐 Technical Architecture
-
-### The Mathematical Foundation
-
-**1. Vector Space Embedding (ℝ³⁸⁴)**
-
-```
-E: Text → ℝ³⁸⁴
-v = [v₁, v₂, ..., v₃₈₄] where vᵢ ∈ ℝ
-```
-
-**2. Similarity Metric (L2 Distance)**
-
-```
-d(q, m) = ||q - m||₂ = √(Σ(qᵢ - mᵢ)²)
-```
-
-**3. Relevance Filter (Inequality Logic)**
-
-```
-R(m) = { 1 (Keep)    if d(q,m) < τ
-       { 0 (Discard) if d(q,m) ≥ τ
-```
-
-**4. Dynamic Threshold (Temporal Boost)**
-
-```
-τ_dynamic = { 1.5 (Looser)   if Year(q) == Year(m)
-            { 1.2 (Stricter) if Year(q) != Year(m)
-```
-
-### System Flow
-
-```
-User Input
-    ↓
-[1] Turn Counter Increments
-    ↓
-[2] Vector Search (Proactive)
-    ├─→ Archive Search (ChromaDB)
-    └─→ Entity Search (Vector Index)
-    ↓
-[3] Context Assembly
-    ├─→ User Profile (JSON)
-    ├─→ Relevant Entities (Filtered)
-    └─→ Timeline Events (Boosted)
-    ↓
-[4] LLM Inference (Groq)
-    ├─→ System Prompt + Context
-    └─→ Tool Calls (Parallel)
-    ↓
-[5] Memory Updates
-    ├─→ Core Memory (JSON)
-    ├─→ Entity Collection (Vector)
-    └─→ Event Timeline (Vector)
-    ↓
-[6] Response + Analytics
-```
+### Auth & Security
+- JWT access tokens (15 min) + httpOnly refresh cookies (30 days) with silent rotation
+- Groq API keys encrypted at rest with Fernet
+- Per-user data isolation across Neo4j, ChromaDB, and the filesystem
+- Google and GitHub OAuth
+- Rate limiting via `slowapi`
 
 ---
 
-## 🚀 Demo Scenarios
+## Tech Stack
 
-### Scenario 1: Professional Context (Boss Name Recall)
-
-**Turn 1:**
-```
-User: Hi! My name is Alex. I work as a software engineer at TechCorp. 
-      My boss is Sarah Chen.
-```
-
-**Turn 500:**
-```
-User: Can you remind me of my boss's name?
-Assistant: Your boss is Sarah Chen.
-```
-
-**Memory Proof:**
-- Origin Turn: 1
-- Distance: 0.23 (HIGH CONFIDENCE 🟢)
-- Retrieved via: Entity Vector Search
+| Layer | Technology |
+|---|---|
+| LLM | Groq (`llama-3.3-70b-versatile`, `llama-3.2-11b-vision-preview`, `whisper-large-v3`) |
+| Graph DB | Neo4j AuraDB |
+| Vector DB | ChromaDB (persistent) |
+| Backend | FastAPI + uvicorn |
+| Auth | python-jose, passlib, httpx OAuth |
+| File parsing | pdfplumber, pypdf, python-docx |
+| PDF export | reportlab |
+| Frontend | Vanilla JS, single HTML file |
 
 ---
 
-### Scenario 2: Temporal Query (Year-Based Boost)
-
-**Turn 10:**
-```
-User: In 2025, I attended the AI Summit in San Francisco.
-```
-
-**Turn 875:**
-```
-User: What conferences did I attend in 2025?
-Assistant: You attended the AI Summit in San Francisco in 2025.
-```
-
-**Memory Proof:**
-- Origin Turn: 10
-- Distance: 1.4 (boosted to 1.5 threshold due to year match)
-- Retrieved via: Event Timeline with Temporal Boost
-
----
-
-### Scenario 3: Entity Deduplication
-
-**Turn 5:**
-```
-User: My friend Tajinder works at Google.
-```
-
-**Turn 200:**
-```
-User: Tajinder Bagga is leading the new project.
-```
-
-**Turn 600:**
-```
-User: Tell me about Tajinder.
-Assistant: Tajinder works at Google and is leading a new project.
-```
-
-**Memory Proof:**
-- System merged "Tajinder" and "Tajinder Bagga" → Single entity
-- No duplicate creation
-
----
-
-## 📊 Analytics Dashboard Features
-
-### Real-Time Metrics
-1. **Turn Counter** - Tracks progress toward 1,000+ turns
-2. **Memory Timeline Chart** - Visualizes recall over time
-3. **Confidence Score Tracking** - Measures retrieval accuracy
-4. **Entity Network Graph** - Shows relationship clusters
-
-### Export Capabilities
-- JSON export of full analytics
-- Memory state snapshots
-- Turn-by-turn confidence logs
-
----
-
-## 🛠️ Installation & Setup
+## Quick Start
 
 ### Prerequisites
-```bash
-Python 3.10+
-ChromaDB
-Groq API Key
-Streamlit
-```
+- Python 3.10+
+- [Neo4j AuraDB](https://neo4j.com/cloud/platform/aura-graph-database/) free instance
+- [Groq](https://console.groq.com) API key
 
-### Installation Steps
+### 1. Clone and install
 
-1. **Clone Repository**
 ```bash
-git clone <repo-url>
+git clone https://github.com/your-username/memory-os.git
 cd memory-os
-```
-
-2. **Install Dependencies**
-```bash
 pip install -r requirements.txt
 ```
 
-3. **Configure Environment**
+### 2. Configure environment
+
 ```bash
-# Create .env file
-GROQ_API_KEY=your_groq_api_key_here
+cp .env.example .env
 ```
 
-4. **Initialize Database**
-```bash
-mkdir -p database/chroma_db
+Edit `.env`:
+
+```env
+NEO4J_URI=neo4j+s://xxxxxxxx.databases.neo4j.io
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=your-password
+
+JWT_SECRET=your-64-char-secret
+ENCRYPTION_KEY=your-fernet-key
+
+APP_BASE_URL=http://localhost:8001
+
+# Optional — OAuth
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
 ```
 
-5. **Run Backend**
+Generate a Fernet encryption key:
+
 ```bash
-uvicorn main:app --reload --port 8000
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-6. **Run Enhanced Frontend**
+### 3. Run
+
 ```bash
-streamlit run app.py
+python -m uvicorn backend.server:app --host 0.0.0.0 --port 8001 --reload
+```
+
+Open **http://localhost:8001** in Chrome or Edge.
+
+> **Note:** Use `localhost`, not `0.0.0.0` — the Web Speech API requires a secure context.
+
+### 4. Register
+
+Create an account and enter your Groq API key. It is encrypted before storage and never logged.
+
+---
+
+## Docker
+
+```bash
+docker compose up --build
 ```
 
 ---
 
-## 📁 Project Structure
+## MCP Server (Claude Desktop)
+
+MemoryOS exposes a stdio MCP server so Claude Desktop can read and write your memories directly.
+
+```bash
+python backend/mcp_server.py
+```
+
+Copy `mcp_config_example.json` to your Claude Desktop config directory and update the path.
+
+**Available tools:** `recall_memories`, `get_user_profile`, `get_recent_events`, `get_entities`, `save_memory`
+
+---
+
+## Memory Algorithm
+
+At each turn the system runs a 6-stage pipeline:
+
+```
+1. Turn increment + session tracking
+2. Surprise-weighted archival retrieval        σ = cosine distance to nearest neighbour
+3. Personalized PageRank spreading activation  4 iterations, damping d=0.25
+4. Greedy relevance-scored context assembly    α=0.45 keyword · β=0.28 recency · γ=0.18 freq · δ=0.09 surprise
+5. LLM inference + tool dispatch + contradiction detection
+6. Hebbian edge strengthening + CLS consolidation tick  (background threads)
+```
+
+Context budget is **constant** regardless of conversation length — O(1) tokens per turn.
+
+---
+
+## Project Structure
 
 ```
 memory-os/
 ├── backend/
-│   ├── managers/
-│   │   ├── archival_manager.py   # ChromaDB vector search
-│   │   ├── core_manager.py       # JSON + Vector dual storage
-│   │   └── buffer_manager.py     # Recent context buffer
-│   └── logic/
-│       ├── orchestrator.py       # Main processing loop
-│       └── prompts.py            # System instructions
-├── database/
-│   ├── chroma_db/               # Vector database
-│   └── user_state.json          # Structured storage
-├── app_enhanced.py              # Premium Streamlit UI
-├── main.py                      # FastAPI backend
-└── requirements.txt
+│   ├── auth/                        # JWT, OAuth, password hashing
+│   ├── logic/
+│   │   ├── orchestrator.py          # Main turn pipeline
+│   │   └── prompts.py               # System prompt templates
+│   └── managers/
+│       ├── archival_manager.py      # ChromaDB — episodic + semantic memory
+│       ├── buffer_manager.py        # In-context conversation buffer
+│       ├── context_manager.py       # Relevance scoring + PPR spreading activation
+│       ├── consolidation_engine.py  # CLS background consolidation
+│       ├── file_manager.py          # File upload, vision, transcription
+│       ├── graph_manager.py         # Neo4j — entities, events, preferences
+│       ├── report_manager.py        # PDF annual report generation
+│       ├── session_manager.py       # Idle-based session summarisation
+│       └── user_manager.py          # Multi-tenant user management
+│   ├── mcp_server.py                # Claude Desktop MCP integration
+│   └── server.py                    # FastAPI app + all endpoints
+├── frontend/
+│   └── index.html                   # Full SPA — chat, graph, analytics, files
+├── config.py                        # All tunable hyperparameters
+├── requirements.txt
+├── Dockerfile
+├── docker-compose.yml
+└── mcp_config_example.json
 ```
 
 ---
 
-## 🎯 Evaluation Alignment
+## API Reference
 
-| Criterion | Our Approach | Evidence |
-|-----------|--------------|----------|
-| **Long-range recall** | Vector search across all turns | Distance < 1.3 filter |
-| **1-1,000 turn accuracy** | Dual indexing + deduplication | Entity merging logic |
-| **Retrieval relevance** | Semantic embeddings | Top-k with thresholds |
-| **Latency impact** | Async saves, limited context | Threading + buffer limit |
-| **Hallucination avoidance** | Strict thresholds, source tracking | Distance-based rejection |
-| **Innovation** | Temporal boosting, confidence UI | Year-match re-ranking |
-
----
-
-## 🏅 Competitive Advantages
-
-1. **Mathematical Rigor** - Clear vector space formulation
-2. **Visual Analytics** - Real-time confidence tracking
-3. **Production-Ready** - Async processing, error handling
-4. **Scalable Architecture** - ChromaDB for 1M+ memories
-5. **User Experience** - Claude/Gemini-level polish
-
----
-
-## 📈 Performance Benchmarks
-
-### Memory Retrieval
-- **Average latency:** < 200ms (vector search)
-- **Accuracy:** 94% for turn gap > 500
-- **Hallucination rate:** < 2% (threshold filtering)
-
-### Scalability
-- **Tested up to:** 1,500 turns
-- **Vector DB size:** 10,000+ embeddings
-- **Response time:** Consistent across turns
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/auth/register` | Create account |
+| POST | `/auth/login` | Get access + refresh tokens |
+| POST | `/auth/refresh` | Rotate access token |
+| POST | `/chat` | Send message (non-streaming) |
+| POST | `/chat/stream` | Send message (SSE streaming) |
+| GET | `/ws` | WebSocket live graph updates |
+| GET | `/graph` | Full knowledge graph |
+| GET | `/stats` | Memory statistics |
+| GET | `/timeline` | Chronological memory timeline |
+| GET | `/search?q=` | Semantic memory search |
+| POST | `/upload` | Upload file → stored as memory |
+| GET | `/files` | List uploaded files |
+| GET | `/files/{id}` | Serve file (authenticated) |
+| DELETE | `/files/{id}` | Delete file |
+| GET | `/gaps` | Knowledge gap analysis |
+| GET | `/ask-past` | Query archival memory only |
+| GET | `/contradictions` | Detected contradictions |
+| GET | `/export/report` | Download PDF annual report |
 
 ---
 
-## 🎬 Demo Video Outline
+## License
 
-1. **Introduction** (30s)
-   - Problem statement recap
-   - Architecture overview
-
-2. **Live Demo** (3 min)
-   - Scenario 1: Boss name recall
-   - Scenario 2: Year-based temporal query
-   - Scenario 3: Entity deduplication
-
-3. **Analytics Showcase** (1 min)
-   - Memory timeline chart
-   - Confidence score tracking
-   - Entity network visualization
-
-4. **Technical Deep Dive** (1 min)
-   - Vector search mechanics
-   - Threshold logic explanation
-   - Temporal boosting demo
-
-5. **Conclusion** (30s)
-   - Key achievements
-   - Future enhancements
-
----
-
-## 🔮 Future Enhancements
-
-1. **Multi-user support** - Separate memory spaces
-2. **Memory compression** - Summarize old events
-3. **Cross-session persistence** - Cloud sync
-4. **Advanced analytics** - Drift detection, memory decay tracking
-5. **Mobile app** - iOS/Android clients
-
----
-
-## 📝 License
-
-MIT License - Open Source
-
----
-
-## 👥 Team
-
-[Your Team Name]
-- Lead Developer
-- ML Engineer
-- UI/UX Designer
-
----
-
-## 🙏 Acknowledgments
-
-- **ChromaDB** - Vector database
-- **Groq** - LLM inference
-- **Streamlit** - UI framework
-- **Plotly** - Visualization library
-
----
-
-## 📞 Contact
-
-For questions or demo requests:
-- Email: [your-email]
-- GitHub: [your-repo]
-
----
-
-**MemoryOS** - *Solving the 1,000-turn memory challenge* 🧠
+MIT

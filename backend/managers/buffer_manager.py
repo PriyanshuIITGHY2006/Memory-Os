@@ -11,3 +11,6 @@ class BufferManager:
 
     def get_messages(self):
         return self.history
+
+    def clear(self):
+        self.history = []
