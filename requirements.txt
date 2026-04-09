@@ -8,6 +8,7 @@ neo4j>=5.14.0
 # Auth
 python-jose[cryptography]
 passlib[bcrypt]
+bcrypt==3.2.2
 cryptography
 httpx
 email-validator
